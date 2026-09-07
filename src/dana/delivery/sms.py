@@ -15,12 +15,27 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from dana.desk.calendar import Appointment
 from dana.tenants.models import Tenant
 
 log = logging.getLogger("dana.delivery.sms")
+
+
+def _spoken_date(iso: str) -> str:
+    """'2026-09-09' -> 'Wednesday, September 9'.
+
+    A confirmation text that reads "confirmed for 2026-09-09" looks like a
+    receipt from a database, which is the impression the whole call was spent
+    avoiding. `%-d` is not portable to Windows, hence the manual day number.
+    """
+    try:
+        parsed = datetime.strptime(iso, "%Y-%m-%d")
+    except ValueError:
+        return iso
+    return f"{parsed.strftime('%A, %B')} {parsed.day}"
 
 
 class ConsentMissing(Exception):
@@ -54,11 +69,7 @@ class SmsSender:
 
     def confirmation_body(self, tenant: Tenant, appt: Appointment) -> str:
         """The confirmation text. Includes the opt-out because the script promised it."""
-        when = (
-            "today"
-            if appt.kind == "emergency"
-            else f"{appt.day}, {appt.window_label}"
-        )
+        when = "today" if appt.kind == "emergency" else f"{_spoken_date(appt.day)}, {appt.window_label}"
         return (
             f"{tenant.business_name}: you're confirmed for {when}. "
             f"{appt.street_address}, {appt.town}. Reply STOP to opt out."

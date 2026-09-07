@@ -360,14 +360,14 @@ class TestPostCallPayload:
         )
         payload = runtime.post_call_payload()
         assert payload["outcome"] == "booked"
-        assert payload["appointment"]["street_address"] == "14 Elm Street"
-        assert payload["appointment"]["sms_consent"] is True
+        assert payload["appointments"][0]["street_address"] == "14 Elm Street"
+        assert payload["appointments"][0]["sms_consent"] is True
 
     def test_an_answered_call_carries_neither(self, runtime: CallRuntime) -> None:
         runtime.record_user("what are your hours?")
         payload = runtime.post_call_payload()
         assert payload["outcome"] == "answered"
-        assert payload["appointment"] is None and payload["message"] is None
+        assert payload["appointments"] == [] and payload["message"] is None
 
     def test_consent_travels_so_a_consumer_can_audit_it(self, runtime: CallRuntime) -> None:
         ops = DeskOperations(runtime)
@@ -381,4 +381,51 @@ class TestPostCallPayload:
             window="two to five",
             sms_consent=False,
         )
-        assert runtime.post_call_payload()["appointment"]["sms_consent"] is False
+        assert runtime.post_call_payload()["appointments"][0]["sms_consent"] is False
+
+    def test_a_second_booking_does_not_erase_the_first(self, runtime: CallRuntime) -> None:
+        # "And can you look at the AC while you're here?" -- a scalar dropped
+        # the first booking, and took its consent flag with it.
+        ops = DeskOperations(runtime)
+        ops.book_appointment(
+            customer_name="Dan",
+            phone="+12035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="no heat",
+            day="tomorrow",
+            window="two to five",
+            sms_consent=True,
+        )
+        ops.book_appointment(
+            customer_name="Dan",
+            phone="+12035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="ac making a noise",
+            day="tomorrow",
+            window="eight to eleven",
+            sms_consent=False,
+        )
+        got = runtime.post_call_payload()["appointments"]
+        assert [a["sms_consent"] for a in got] == [True, False]
+
+    def test_an_emergency_outranks_an_earlier_booking(self, runtime: CallRuntime) -> None:
+        ops = DeskOperations(runtime)
+        ops.book_appointment(
+            customer_name="Dan",
+            phone="+12035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="tune up",
+            day="tomorrow",
+            window="two to five",
+        )
+        ops.dispatch_emergency(
+            customer_name="Dan",
+            phone="+12035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="water heater started leaking",
+        )
+        assert runtime.post_call_payload()["outcome"] == "dispatched"

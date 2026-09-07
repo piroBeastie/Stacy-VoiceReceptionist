@@ -242,17 +242,15 @@ async def _on_shutdown(runtime: CallRuntime, watchdog: asyncio.Future[Any]) -> N
     watchdog.cancel()
     runtime.finish()
 
-    if runtime.appointment is not None:
-        sender = SmsSender(provider=LoggingProvider())
+    sender = SmsSender(provider=LoggingProvider())
+    for appt in runtime.appointments:
         try:
-            sender.send_confirmation(runtime.tenant, runtime.appointment)
+            sender.send_confirmation(runtime.tenant, appt)
         except ConsentMissing:
             # Expected whenever the caller declined. The booking still stands;
-            # only the text is withheld.
-            log.info(
-                "no SMS for %s: consent was not captured",
-                runtime.appointment.appointment_id,
-            )
+            # only the text is withheld. Consent is per booking, so a call that
+            # produced two is evaluated twice.
+            log.info("no SMS for %s: consent was not captured", appt.appointment_id)
 
     webhook = _webhook()
     if webhook is not None:

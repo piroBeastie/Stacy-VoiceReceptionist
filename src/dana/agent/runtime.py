@@ -58,7 +58,14 @@ class CallRuntime:
     started_at: float = field(default_factory=time.monotonic)
     turn_index: int = 0
     outcome: Outcome = "answered"
-    appointment: Appointment | None = None
+    appointments: list[Appointment] = field(default_factory=list)
+    """Every booking made on this call, in order.
+
+    Plural because a single call really can produce two -- "and can you look at
+    the AC while you're here Thursday?" -- and a scalar silently dropped the
+    first one, taking its SMS consent flag with it.
+    """
+
     message: Message | None = None
     transcript: list[dict[str, str]] = field(default_factory=list)
 
@@ -179,10 +186,20 @@ class CallRuntime:
 
     # ---- outcome --------------------------------------------------------
 
+    @property
+    def appointment(self) -> Appointment | None:
+        """The most recent booking, for the common single-booking call."""
+        return self.appointments[-1] if self.appointments else None
+
     def note_booking(self, appt: Appointment) -> None:
-        """Record a completed booking as the call's outcome."""
-        self.appointment = appt
-        self.outcome = "dispatched" if appt.kind == "emergency" else "booked"
+        """Record a completed booking as the call's outcome.
+
+        An emergency dispatch outranks a routine booking made earlier in the
+        same call: it is the thing the office needs to see first.
+        """
+        self.appointments.append(appt)
+        if appt.kind == "emergency" or self.outcome != "dispatched":
+            self.outcome = "dispatched" if appt.kind == "emergency" else "booked"
 
     def note_message(self, msg: Message) -> None:
         """Record a taken message, unless a booking already happened."""
@@ -203,22 +220,21 @@ class CallRuntime:
             transcript=list(self.transcript),
             outcome=self.outcome,
             duration_s=self.duration_s,
-            appointment=(
+            appointments=[
                 {
-                    "appointment_id": self.appointment.appointment_id,
-                    "day": self.appointment.day,
-                    "window": self.appointment.window_label,
-                    "kind": self.appointment.kind,
-                    "customer_name": self.appointment.customer_name,
-                    "phone": self.appointment.phone,
-                    "street_address": self.appointment.street_address,
-                    "town": self.appointment.town,
-                    "problem": self.appointment.problem,
-                    "sms_consent": self.appointment.sms_consent,
+                    "appointment_id": a.appointment_id,
+                    "day": a.day,
+                    "window": a.window_label,
+                    "kind": a.kind,
+                    "customer_name": a.customer_name,
+                    "phone": a.phone,
+                    "street_address": a.street_address,
+                    "town": a.town,
+                    "problem": a.problem,
+                    "sms_consent": a.sms_consent,
                 }
-                if self.appointment
-                else None
-            ),
+                for a in self.appointments
+            ],
             message=(
                 {
                     "message_id": self.message.message_id,

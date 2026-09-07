@@ -182,7 +182,7 @@ def call_payload(
     transcript: list[dict[str, str]],
     outcome: str,
     duration_s: float,
-    appointment: dict[str, Any] | None = None,
+    appointments: list[dict[str, Any]] | None = None,
     message: dict[str, Any] | None = None,
     latency: dict[str, float] | None = None,
 ) -> dict[str, Any]:
@@ -191,6 +191,10 @@ def call_payload(
     `outcome` is one of the three the prompt allows -- answered, booked,
     message -- plus `dispatched` for the emergency branch, so a consumer can
     route on it without parsing the transcript.
+
+    `appointments` is a list even though nearly every call produces at most
+    one. A scalar meant a caller who booked twice silently lost the first
+    booking, and with it that booking's SMS consent flag.
     """
     return {
         "type": "post_call",
@@ -200,7 +204,7 @@ def call_payload(
         "outcome": outcome,
         "duration_s": round(duration_s, 2),
         "transcript": transcript,
-        "appointment": appointment,
+        "appointments": appointments or [],
         "message": message,
         "latency": latency or {},
         "sent_at": int(time.time()),

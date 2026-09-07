@@ -96,7 +96,7 @@ Nothing outside `tenants/` knows a business fact. Nothing outside
 client two cheap and vendor swaps a config change.
 
 A third rule now joins them: **nothing outside `agent/nodes.py` and
-`agent/entrypoint.py` imports the SDK.** All 145 tests run with no vendor
+`agent/entrypoint.py` imports the SDK.** All 148 tests run with no vendor
 package installed, which is why the whole policy layer is testable at all.
 
 ---
@@ -125,6 +125,13 @@ Prompt parity against the live ElevenLabs agent, during the migration window:
 
 ```bash
 python scripts/diff_against_elevenlabs.py
+```
+
+Walk a scripted call through the real calendar, with no SIP trunk and no model
+— the fastest way to hear how a refusal reads before a caller does:
+
+```bash
+python scripts/dry_run.py
 ```
 
 ---
@@ -238,7 +245,7 @@ surface remaining.
 python -m pytest -q
 ```
 
-145 tests, none of which need a vendor package. They are not style checks — each
+148 tests, none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

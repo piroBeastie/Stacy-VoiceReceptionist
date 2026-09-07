@@ -285,3 +285,13 @@ class TestSmsConsentIsAControlNotAScript:
         body = SmsSender(provider=LoggingProvider()).confirmation_body(tenant, appt)
         assert "STOP" in body
         assert tenant.business_name in body
+
+    def test_the_date_reads_like_a_person_wrote_it(
+        self, cal: CalendarStore, tenant: Tenant, monday_9am: datetime
+    ) -> None:
+        # "confirmed for 2026-09-15" looks like a database receipt, which is
+        # the impression the whole call was spent avoiding.
+        appt = _book(cal, tenant, date(2026, 9, 15), "eleven to two", now=monday_9am)
+        body = SmsSender(provider=LoggingProvider()).confirmation_body(tenant, appt)
+        assert "Tuesday, September 15" in body
+        assert "2026-09-15" not in body
