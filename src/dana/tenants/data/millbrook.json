@@ -24,6 +24,44 @@
     { "label": "two to five", "start": "14:00", "end": "17:00" }
   ],
 
+  "hours": [
+    { "day": "monday", "open_at": "08:00", "close_at": "17:00" },
+    { "day": "tuesday", "open_at": "08:00", "close_at": "17:00" },
+    { "day": "wednesday", "open_at": "08:00", "close_at": "17:00" },
+    { "day": "thursday", "open_at": "08:00", "close_at": "17:00" },
+    { "day": "friday", "open_at": "08:00", "close_at": "17:00" },
+    { "day": "saturday", "open_at": "09:00", "close_at": "13:00" },
+    { "day": "sunday" }
+  ],
+
+  "services": [
+    { "name": "Diagnostic visit", "price_low": 89, "price_high": 129, "note": "waived if you book the repair" },
+    { "name": "Furnace repair", "price_low": 150, "price_high": 800 },
+    { "name": "Air conditioning repair", "price_low": 150, "price_high": 900 },
+    { "name": "Seasonal tune-up", "price_low": 119, "price_high": 179 },
+    { "name": "System replacement", "note": "quoted on site after a tech looks at it" }
+  ],
+
+  "faqs": [
+    { "question": "Do you charge for estimates on a replacement?", "answer": "No, replacement quotes are free. Repair diagnostics carry the visit fee." },
+    { "question": "How soon can someone come out?", "answer": "Usually same day or next day, depending on the window." },
+    { "question": "Do you work on mini-splits?", "answer": "Yes, both service and installation." },
+    { "question": "What brands do you service?", "answer": "All major brands." },
+    { "question": "Do you offer financing?", "answer": "Yes, on replacements. The office walks through the options." }
+  ],
+
+  "emergency_policy": {
+    "conditions": [
+      "no heat when it is at or below freezing outside",
+      "no heat with an infant, an elderly person, or someone unwell in the house",
+      "no cooling during a heat advisory with a vulnerable person in the house",
+      "a water heater that is actively leaking"
+    ],
+    "after_hours": true
+  },
+
+  "capacity_per_window": 2,
+
   "asr_keywords": [
     "okay", "ok", "yes", "yep", "yeah", "no", "nope", "bye", "sure", "hello",
     "Wallingford", "Meriden", "Cheshire", "Hamden", "North Haven", "Casey", "Miles"
