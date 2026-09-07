@@ -79,6 +79,14 @@ class PromptBuilder:
             "staff_spoken": _spoken_list(staff_names),
             "escalation_staff": escalation,
             "demo_mode": tenant.demo_mode,
+            # The knowledge base. The prompt has always told the model "never
+            # state a fact that isn't in it" -- these are the first version of
+            # this repo where there is an "it" to be in.
+            "hours_spoken": tenant.hours_spoken,
+            "services_lines": tenant.services_spoken,
+            "faqs": [(f.question, f.answer) for f in tenant.faqs],
+            "emergency_conditions": tenant.emergency_policy.conditions,
+            "emergency_after_hours": tenant.emergency_policy.after_hours,
         }
 
         if tenant.reseller is not None:

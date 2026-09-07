@@ -1,32 +1,54 @@
 """LiveKit worker entrypoint: route an inbound call to its tenant and run it.
 
 This module is deliberately the thinnest thing in the repo. Everything with
-judgement in it -- prompt, tenant routing, backchannel policy, vendor choice,
-metrics -- lives elsewhere and is unit-testable without a SIP trunk. What is
-left here is glue, and glue is what breaks when an SDK version moves.
+judgement in it -- prompt, tenant routing, backchannel policy, filler policy,
+tools, vendor choice, metrics -- lives elsewhere and is unit-testable without a
+SIP trunk. What is left here is glue, and glue is what breaks when an SDK
+version moves.
+
+Two things that used to happen inside this file and no longer do:
+
+**Model loading.** Silero and the end-of-utterance transformer were constructed
+per call, which put a disk read and a session build between the caller hearing a
+ring and the agent saying anything. They are loaded once per worker process in
+:func:`prewarm` now, along with the tenant store, which was also being re-read
+and re-validated on every single call.
+
+**Timing.** Stage marks were derived from the session's `metrics_collected`
+event, which reports durations after the fact and fires after the turn had
+already been emitted. They are taken inside the pipeline nodes instead -- see
+:mod:`dana.agent.nodes`.
 
 VERIFY AGAINST THE INSTALLED SDK before the first live call. The shape below
-(AgentSession, on-event names, participant attribute keys for the dialed number)
-is the part most likely to have shifted.
+(AgentSession keyword arguments, event names, participant attribute keys for the
+dialed number) is the part most likely to have shifted.
+:func:`dana.providers.registry.supported` already guards the plugin
+constructors; the session arguments here are guarded the same way.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from typing import Any
 
-from dana.agent.backchannel import BackchannelFilter
-from dana.metrics import JsonlSink, Stage, TraceSink, TurnTrace
-from dana.prompt import PromptBuilder
+from dana.agent.nodes import build_agent
+from dana.agent.runtime import CallRuntime
+from dana.agent.tools import DeskOperations
+from dana.delivery import LoggingProvider, SmsSender, WebhookSender
+from dana.delivery.sms import ConsentMissing
+from dana.desk import CalendarStore, MessageStore
+from dana.metrics import JsonlSink
+from dana.providers.base import PipelineConfig
 from dana.providers.registry import (
     build_llm,
     build_stt,
     build_tts,
     build_turn_detector,
     build_vad,
-    pipeline_for,
+    prewarm as prewarm_models,
+    supported,
 )
 from dana.tenants import TenantStore
 
@@ -39,163 +61,202 @@ SIP_CALLER_ATTR = "sip.phoneNumber"
 """Participant attribute holding the caller's own number, for {{system__caller_id}}."""
 
 
-class CallRuntime:
-    """Per-call state: which tenant, which prompt, and the turn traces so far.
+def prewarm(proc: Any) -> None:
+    """Load everything reusable once per worker process.
 
-    Built once per call rather than per turn, because the prompt render and the
-    tenant lookup are pure overhead on the critical path if repeated.
+    Registered as `WorkerOptions(prewarm_fnc=...)`, so it runs before any job is
+    assigned. Anything constructed here is paid for while the process is idle
+    instead of while a caller is listening to silence.
     """
-
-    def __init__(
-        self,
-        *,
-        store: TenantStore,
-        dialed_number: str,
-        caller_id: str,
-        call_id: str,
-        sink: TraceSink,
-    ) -> None:
-        self.tenant = store.for_number(dialed_number)
-        self.call_id = call_id
-        self.caller_id = caller_id
-        self.sink = sink
-        self.turn_index = 0
-        self._trace: TurnTrace | None = None
-
-        builder = PromptBuilder()
-        now = datetime.now(ZoneInfo(self.tenant.timezone)).strftime("%A, %B %d, %Y at %I:%M %p")
-        self.system_prompt = builder.fill_runtime(
-            builder.render(self.tenant), now=now, caller_id=caller_id
+    prewarm_models(proc.userdata)
+    try:
+        proc.userdata["tenants"] = TenantStore(
+            os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data")
         )
-        self.pipeline = pipeline_for(self.tenant)
-        self.backchannel = BackchannelFilter(max_words=self.pipeline.turn.interrupt_min_words)
+    except Exception:  # noqa: BLE001 - a bad tenant file should surface, not crash the worker
+        log.exception("tenant store failed to load at prewarm; will retry per call")
 
-        log.info(
-            "call %s -> tenant=%s prompt=%d chars caller=%s",
-            call_id,
-            self.tenant.tenant_id,
-            len(self.system_prompt),
-            caller_id or "<unknown>",
+
+def _stores(proc_userdata: dict[str, Any]) -> tuple[TenantStore, CalendarStore, MessageStore]:
+    """Fetch the prewarmed stores, building any that prewarm could not."""
+    tenants = proc_userdata.get("tenants") or TenantStore(
+        os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data")
+    )
+    data_dir = os.getenv("DANA_DATA_DIR", "data")
+    calendar = proc_userdata.setdefault("calendar", CalendarStore(f"{data_dir}/calendar"))
+    messages = proc_userdata.setdefault("messages", MessageStore(f"{data_dir}/messages"))
+    return tenants, calendar, messages
+
+
+def _webhook() -> WebhookSender | None:
+    """The post-call consumer, if one is configured."""
+    url, secret = os.getenv("DANA_WEBHOOK_URL"), os.getenv("DANA_WEBHOOK_SECRET")
+    if not url or not secret:
+        log.warning(
+            "no DANA_WEBHOOK_URL/SECRET configured -- the agent's closing promise "
+            "that someone gets the caller's details will not be kept"
         )
-
-    def begin_turn(self) -> TurnTrace:
-        """Open a new trace at the moment the caller stops speaking."""
-        self._trace = TurnTrace(
-            call_id=self.call_id,
-            tenant_id=self.tenant.tenant_id,
-            turn_index=self.turn_index,
-        )
-        self.turn_index += 1
-        self._trace.mark(Stage.USER_STOPPED)
-        return self._trace
-
-    def mark(self, stage: Stage, **meta: object) -> None:
-        """Mark a stage on the open turn. A no-op if no turn is open."""
-        if self._trace is None:
-            return
-        self._trace.mark(stage)
-        if meta:
-            self._trace.annotate(**meta)
-
-    def end_turn(self) -> None:
-        """Emit the open trace and close it."""
-        if self._trace is None:
-            return
-        self.sink.emit(self._trace)
-        self._trace = None
+        return None
+    return WebhookSender(url=url, secret=secret)
 
 
-async def entrypoint(ctx: object) -> None:
-    """LiveKit job entrypoint. One invocation per inbound call.
-
-    Args:
-        ctx: The livekit-agents JobContext. Typed loosely so this module imports
-            without the SDK present, which keeps the test suite fast.
-    """
-    from livekit.agents import Agent, AgentSession, RoomInputOptions  # noqa: PLC0415
+async def entrypoint(ctx: Any) -> None:
+    """LiveKit job entrypoint. One invocation per inbound call."""
+    from livekit.agents import AgentSession, RoomInputOptions  # noqa: PLC0415
 
     await ctx.connect()
     participant = await ctx.wait_for_participant()
     attrs = getattr(participant, "attributes", {}) or {}
 
-    dialed = attrs.get(SIP_DIALED_ATTR, "")
-    caller_id = attrs.get(SIP_CALLER_ATTR, "")
+    userdata = getattr(ctx.proc, "userdata", {}) if hasattr(ctx, "proc") else {}
+    tenants, calendar, messages = _stores(userdata)
 
-    runtime = CallRuntime(
-        store=TenantStore(os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data")),
-        dialed_number=dialed,
-        caller_id=caller_id,
+    runtime = CallRuntime.build(
+        tenant=tenants.for_number(attrs.get(SIP_DIALED_ATTR, "")),
         call_id=ctx.room.name,
+        caller_id=attrs.get(SIP_CALLER_ATTR, ""),
         sink=JsonlSink(os.getenv("DANA_TRACE_DIR", "data/traces")),
+        calendar=calendar,
+        messages=messages,
     )
-    cfg = runtime.pipeline
+    cfg: PipelineConfig = runtime.pipeline
 
-    session = AgentSession(
-        vad=build_vad(),
-        stt=build_stt(cfg.stt),
-        llm=build_llm(cfg.llm),
-        tts=build_tts(cfg.tts),
-        turn_detection=build_turn_detector(cfg.turn),
-        min_endpointing_delay=cfg.turn.min_endpointing_delay_s,
-        max_endpointing_delay=cfg.turn.max_endpointing_delay_s,
-        preemptive_generation=cfg.turn.preemptive_generation,
-    )
+    session_kwargs: dict[str, Any] = {
+        "vad": userdata.get("vad") or build_vad(),
+        "stt": build_stt(cfg.stt),
+        "llm": build_llm(cfg.llm),
+        "tts": build_tts(cfg.tts),
+        "turn_detection": userdata.get("turn_detector") or build_turn_detector(cfg.turn),
+        "min_endpointing_delay": cfg.turn.min_endpointing_delay_s,
+        "max_endpointing_delay": cfg.turn.max_endpointing_delay_s,
+        "preemptive_generation": cfg.turn.preemptive_generation,
+        # Held only in the backchannel filter, this classified correctly and
+        # suppressed nothing -- the session is what owns the interruption.
+        "min_interruption_words": cfg.turn.interrupt_min_words,
+        "false_interruption_timeout": cfg.turn.false_interruption_timeout_s,
+        "resume_false_interruption": True,
+    }
+    session = AgentSession(**supported(AgentSession, session_kwargs))
 
-    _wire_metrics(session, runtime)
+    ops = DeskOperations(runtime)
+    _wire(session, runtime)
+    watchdog = asyncio.ensure_future(_silence_watchdog(session, runtime))
+    ctx.add_shutdown_callback(lambda: _on_shutdown(runtime, watchdog))
 
     await session.start(
-        agent=Agent(instructions=runtime.system_prompt),
+        agent=build_agent(runtime, ops),
         room=ctx.room,
         room_input_options=RoomInputOptions(),
     )
 
     # The greeting is verbatim tenant config, not model output: the AI
     # disclosure and the recording notice have to be exact every single time.
-    await session.say(runtime.tenant.greeting, allow_interruptions=False)
+    # It stays interruptible by default -- a caller who talks over "thanks for
+    # calling" was previously both ignored and untranscribed, losing their
+    # opening sentence entirely.
+    await session.say(
+        runtime.tenant.greeting,
+        allow_interruptions=cfg.turn.first_message_interruptible,
+    )
+    runtime.record_agent(runtime.tenant.greeting)
 
 
-def _wire_metrics(session: object, runtime: CallRuntime) -> None:
-    """Attach stage marks to session events.
+def _wire(session: Any, runtime: CallRuntime) -> None:
+    """Attach conversation bookkeeping to session events.
 
-    Event names are the part of this file most likely to drift between SDK
-    versions; each handler is defensive so a renamed event degrades to a missing
-    column in the report rather than a dropped call.
+    Only events that carry information the pipeline nodes cannot see are
+    handled here. Timing is not among them.
     """
 
     @session.on("user_state_changed")  # type: ignore[attr-defined]
-    def _on_user_state(ev: object) -> None:
+    def _on_user_state(ev: Any) -> None:
         if getattr(ev, "new_state", None) == "listening":
             runtime.begin_turn()
 
     @session.on("user_input_transcribed")  # type: ignore[attr-defined]
-    def _on_transcript(ev: object) -> None:
+    def _on_transcript(ev: Any) -> None:
+        text = getattr(ev, "transcript", "") or ""
         if getattr(ev, "is_final", False):
-            runtime.mark(Stage.STT_FINAL)
-        else:
-            # Interim text is where the backchannel decision belongs: by the
-            # time a transcript is final the agent has already stopped talking.
-            text = getattr(ev, "transcript", "") or ""
-            if text and runtime.backchannel.is_backchannel(text):
-                log.debug("ignoring backchannel %r", text)
+            runtime.record_user(text)
 
-    @session.on("agent_state_changed")  # type: ignore[attr-defined]
-    def _on_agent_state(ev: object) -> None:
-        state = getattr(ev, "new_state", None)
-        if state == "thinking":
-            runtime.mark(Stage.ENDPOINT_COMMITTED)
-        elif state == "speaking":
-            runtime.mark(Stage.AUDIO_OUT)
-            runtime.end_turn()
+    @session.on("conversation_item_added")  # type: ignore[attr-defined]
+    def _on_item(ev: Any) -> None:
+        item = getattr(ev, "item", None)
+        if getattr(item, "role", None) == "assistant":
+            text = getattr(item, "text_content", None) or ""
+            if text:
+                runtime.record_agent(text)
 
-    @session.on("metrics_collected")  # type: ignore[attr-defined]
-    def _on_metrics(ev: object) -> None:
-        m = getattr(ev, "metrics", None)
-        ttft = getattr(m, "ttft", None)
-        if ttft is not None:
-            runtime.mark(Stage.LLM_FIRST_TOKEN, ttft_reported=ttft)
-        ttfb = getattr(m, "ttfb", None)
-        if ttfb is not None:
-            runtime.mark(Stage.TTS_FIRST_BYTE, ttfb_reported=ttfb)
+    @session.on("close")  # type: ignore[attr-defined]
+    def _on_close(_ev: Any) -> None:
+        runtime.finish()
+
+
+async def _silence_watchdog(session: Any, runtime: CallRuntime) -> None:
+    """Re-engage a quiet line, then close it.
+
+    The prompt says "if the line goes quiet mid-call, ask once, 'Still there?'"
+    -- an instruction the agent could not follow, because a silent caller never
+    produces a turn in which to follow it. `turn_timeout_s` and
+    `silence_end_call_s` were config fields nothing read.
+    """
+    turn_timeout = runtime.pipeline.turn.turn_timeout_s
+    end_after = runtime.pipeline.turn.silence_end_call_s
+    if turn_timeout <= 0:
+        return
+
+    asked = False
+    quiet_for = 0.0
+    tick = 0.5
+    try:
+        while True:
+            await asyncio.sleep(tick)
+            if getattr(session, "agent_state", None) == "speaking":
+                quiet_for, asked = 0.0, False
+                continue
+            if getattr(session, "user_state", None) == "speaking":
+                quiet_for, asked = 0.0, False
+                continue
+            quiet_for += tick
+
+            if not asked and quiet_for >= turn_timeout:
+                asked = True
+                runtime.annotate(reengaged=True)
+                await session.say("Still there?", allow_interruptions=True)
+            elif 0 < end_after <= quiet_for:
+                log.info("call %s closing after %.0fs of silence", runtime.call_id, quiet_for)
+                runtime.outcome = "abandoned" if not runtime.transcript else runtime.outcome
+                await session.aclose()
+                return
+    except asyncio.CancelledError:
+        return
+
+
+async def _on_shutdown(runtime: CallRuntime, watchdog: asyncio.Future[Any]) -> None:
+    """Flush the last turn, text the confirmation, and deliver the call.
+
+    Ordering matters: the trace is flushed first so the latency summary in the
+    payload includes the final turn, and the SMS is attempted before the webhook
+    so a consent refusal shows up in the delivered record.
+    """
+    watchdog.cancel()
+    runtime.finish()
+
+    if runtime.appointment is not None:
+        sender = SmsSender(provider=LoggingProvider())
+        try:
+            sender.send_confirmation(runtime.tenant, runtime.appointment)
+        except ConsentMissing:
+            # Expected whenever the caller declined. The booking still stands;
+            # only the text is withheld.
+            log.info(
+                "no SMS for %s: consent was not captured",
+                runtime.appointment.appointment_id,
+            )
+
+    webhook = _webhook()
+    if webhook is not None:
+        await webhook.send(runtime.post_call_payload())
 
 
 def main() -> None:
@@ -205,7 +266,7 @@ def main() -> None:
 
     load_dotenv()
     logging.basicConfig(level=os.getenv("DANA_LOG_LEVEL", "INFO"))
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
 
 
 if __name__ == "__main__":

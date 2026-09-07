@@ -6,5 +6,5 @@ venv/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-data/traces/
+data/
 *.jsonl

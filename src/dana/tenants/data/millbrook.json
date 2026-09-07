@@ -39,7 +39,7 @@
     { "name": "Furnace repair", "price_low": 150, "price_high": 800 },
     { "name": "Air conditioning repair", "price_low": 150, "price_high": 900 },
     { "name": "Seasonal tune-up", "price_low": 119, "price_high": 179 },
-    { "name": "System replacement", "note": "quoted on site after a tech looks at it" }
+    { "name": "System replacement", "note": "free quote, and financing is available" }
   ],
 
   "faqs": [

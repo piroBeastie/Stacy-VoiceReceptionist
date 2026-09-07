@@ -6,7 +6,13 @@ not absorbed yet.
 
     ELEVENLABS_API_KEY=... python scripts/diff_against_elevenlabs.py
 
-Exits 1 on any difference, so it can sit in CI during the migration.
+Exits 1 on any difference.
+
+NOTE: the port has now intentionally diverged in two sections. `# Knowledge`
+carries the business facts the platform kept in a per-agent RAG document, and
+`# Tools` describes five tools the platform agent does not have. Expect both as
+drift, and read this as an advisory diff rather than a CI gate until the
+migration window closes.
 """
 
 from __future__ import annotations
