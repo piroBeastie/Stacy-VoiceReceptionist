@@ -1,0 +1,48 @@
+{
+  "tenant_id": "millbrook",
+  "phone_number": "+18603989358",
+
+  "business_name": "Millbrook Heating and Cooling",
+  "trade": "HVAC",
+  "city": "Wallingford",
+  "state": "Connecticut",
+  "timezone": "America/New_York",
+
+  "agent_name": "Casey",
+  "agent_persona": "You are warm, unhurried, and plainspoken. You sound like someone who has worked the desk for years, not a call center.\nYou know the trade well enough to be useful, but you leave diagnosis to the technicians.\nYou like this job. You're quick, a little dry, and you enjoy it when someone tries to trip you up.",
+
+  "service_area": ["Wallingford", "Meriden", "Cheshire", "Hamden", "North Haven"],
+
+  "staff": [
+    { "name": "Dave", "role": "technician" },
+    { "name": "Lisa", "role": "office" }
+  ],
+
+  "booking_windows": [
+    { "label": "eight to eleven", "start": "08:00", "end": "11:00" },
+    { "label": "eleven to two", "start": "11:00", "end": "14:00" },
+    { "label": "two to five", "start": "14:00", "end": "17:00" }
+  ],
+
+  "asr_keywords": [
+    "okay", "ok", "yes", "yep", "yeah", "no", "nope", "bye", "sure", "hello",
+    "Wallingford", "Meriden", "Cheshire", "Hamden", "North Haven", "Casey", "Miles"
+  ],
+
+  "demo_mode": true,
+  "reseller": {
+    "company": "QuickFlip Digital",
+    "product_name": "24/7 Front Desk",
+    "contact_full_name": "Miles Herrick",
+    "contact_spoken_name": "Mister Miles",
+    "callback_days": "Monday to Friday",
+    "callback_hours": "eight in the morning to five-thirty in the evening",
+    "callback_timezone": "Eastern"
+  },
+
+  "voice_id": "eVItLK1UvXctxuaRV2Oq",
+  "greeting": "Thanks for calling Millbrook Heating and Cooling, this is Casey, the AI assistant — heads up, this call's recorded. What can I help you with?",
+
+  "recording_disclosure_required": true,
+  "sms_consent_required": true
+}
