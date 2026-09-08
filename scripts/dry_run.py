@@ -81,23 +81,32 @@ def main() -> int:
     print(f"  agent   {tenant.greeting}\n")
 
     turn("(caller id arrives)", ops.lookup_customer())
-    turn("My furnace is out. Can someone come tomorrow?", ops.check_availability("tomorrow"))
+
+    # The thing callers actually do: three fields in one breath.
     turn(
-        "Eleven to two works. Dan, two-oh-three five-five-five oh-one-four-seven, "
-        "fourteen Elm Street in Wallingford. Yes to the text.",
-        ops.book_appointment(
+        "Yeah hi, this is Dan over at fourteen Elm in Wallingford and my furnace "
+        "is making a noise.",
+        ops.record_details(
             customer_name="Dan",
-            phone="+12035550147",
             street_address="14 Elm Street",
             town="Wallingford",
-            problem="no heat upstairs",
-            day="tomorrow",
-            window="eleven to two",
-            sms_consent=True,
+            problem="furnace making a noise",
             system_type="furnace",
-            fuel="gas",
         ),
     )
+    turn(
+        "Two-oh-three, five-five-five, oh-one-four-seven. And yeah, texts are fine.",
+        ops.record_details(
+            phone="two zero three five five five oh one four seven", sms_consent=True
+        ),
+    )
+    turn("It's gas. Can someone come tomorrow?", ops.record_details(fuel="gas"))
+    turn("What have you got?", ops.check_availability("tomorrow"))
+    turn(
+        "Eleven to two works.",
+        ops.record_details(day="tomorrow", window="eleven to two"),
+    )
+    turn("Yep, that's right.", ops.book_appointment())
 
     print("  -- delivery for that call --\n")
     sender = SmsSender(provider=LoggingProvider())

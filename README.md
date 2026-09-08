@@ -66,7 +66,7 @@ Three of those numbers moved once the docs were read end to end:
   reply, buffered before a single frame is synthesized. It is now 50.
 - Deepgram **Nova-3 rejects `keywords`** and uses keyterm prompting instead, so
   every boosted town and staff name was silently ignored.
-- Prompt size is measurable and large: **~5,460 tokens in demo mode, ~3,360 for
+- Prompt size is measurable and large: **~5,700 tokens in demo mode, ~3,600 for
   a real client.** TTFT scales with it, so the demo-only blocks are not free.
 - The two per-call values sat ~200 tokens into that prompt, so a provider could
   cache almost none of it — and the timestamp varies by the minute, so even that
@@ -101,7 +101,7 @@ Nothing outside `tenants/` knows a business fact. Nothing outside
 client two cheap and vendor swaps a config change.
 
 A third rule now joins them: **nothing outside `agent/nodes.py` and
-`agent/entrypoint.py` imports the SDK.** All 219 tests run with no vendor
+`agent/entrypoint.py` imports the SDK.** All 254 tests run with no vendor
 package installed, which is why the whole policy layer is testable at all.
 
 ---
@@ -216,11 +216,35 @@ Five tools, all backed by real stores rather than placeholders:
 
 | Tool | Backed by | Refuses when |
 |---|---|---|
-| `lookup_customer` | `desk/calendar.py` | — |
+| `lookup_customer` | `desk/calendar.py` | — (pre-fills the slots on a hit) |
 | `check_availability` | `desk/calendar.py` | closed day, elapsed window, full window |
-| `book_appointment` | `desk/calendar.py` | no street address, unknown window, at capacity |
-| `dispatch_emergency` | `desk/calendar.py` | — (skips capacity by design) |
+| `record_details` | `agent/slots.py` | town outside the service area |
+| `book_appointment` | `desk/calendar.py` + slots | anything still missing, unknown window, at capacity |
+| `dispatch_emergency` | `desk/calendar.py` + slots | name/number/address/town/problem missing |
 | `take_message` | `desk/messages.py` | — |
+
+### Callers don't answer one question at a time
+
+"Yeah hi, this is Dan over at fourteen Elm in Wallingford and my furnace is
+making a noise" is a name, an address, a town and a problem in one breath. The
+prompt's "one item per turn" rule governs what the agent *asks*, never what it
+can absorb — but read literally it marched through the list regardless, and
+being asked for your own name after you have just given it is one of the
+sharpest tells there is. The taste section already had the right instruction
+("if they've already said either, don't ask again"); the booking flow did not.
+
+`agent/slots.py` is the working memory. `record_details` takes however many
+fields arrived, and its reply names only what is still outstanding — so the
+model doesn't have to remember, it has to record. `book_appointment` then takes
+**no arguments**: it books exactly what was recorded, which is what was read
+back, rather than a re-statement the model may have drifted on.
+
+Two more prompt rules became structural on the way:
+
+- **Fuel is only asked for a furnace or a boiler.** The prompt says never to ask
+  gas-or-electric about a mini-split or a heat pump; now it can't.
+- **The town is checked against the service area when it arrives**, not
+  discovered after six more fields have been collected.
 
 Every refusal returns a sentence the agent can say next, not an error. "That one
 just filled. I've still got eleven to two, or two to five" keeps the call
@@ -296,7 +320,7 @@ surface remaining.
 python -m pytest -q
 ```
 
-219 tests, none of which need a vendor package. They are not style checks — each
+254 tests, none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

@@ -23,6 +23,7 @@ import logging
 from typing import Any, Callable
 
 from dana.agent.runtime import CallRuntime
+from dana.agent.slots import spoken_digits
 from dana.desk.calendar import BookingError, SlotUnavailable, UnknownWindow, resolve_day
 
 log = logging.getLogger("dana.agent.tools")
@@ -87,6 +88,10 @@ class DeskOperations:
         Defaults to the caller ID. Recognising a returning caller is the
         cheapest thing on this list that makes the agent sound like it works
         there rather than like it was hired this morning.
+
+        A hit pre-fills the slots, so the agent confirms an address instead of
+        collecting one. It says so in the return value: people move, and the
+        record is a starting point rather than a fact.
         """
         cal = self.runtime.calendar
         if cal is None:
@@ -98,37 +103,98 @@ class DeskOperations:
         if not history:
             return "No record on this number — treat them as a new customer."
         last = history[0]
+        self.runtime.slots.update(
+            customer_name=last.customer_name,
+            phone=last.phone,
+            street_address=last.street_address,
+            town=last.town,
+        )
         return (
             f"Returning customer: {last.customer_name} at {last.street_address}, "
-            f"{last.town}. Last visit was {last.day} for {last.problem}."
+            f"{last.town}. Last visit was {last.day} for {last.problem}. "
+            f"Confirm the address is still right rather than asking for it again."
         )
+
+    def record_details(
+        self,
+        *,
+        customer_name: str = "",
+        phone: str = "",
+        street_address: str = "",
+        town: str = "",
+        problem: str = "",
+        system_type: str = "",
+        fuel: str = "",
+        day: str = "",
+        window: str = "",
+        sms_consent: bool | None = None,
+    ) -> str:
+        """Write down whatever the caller just gave, however many things it was.
+
+        Callers answer three questions in one breath. Everything heard goes in
+        here, and the return value names only what is still outstanding -- so
+        the agent asks for the next missing thing rather than marching through a
+        list it has already been given half of.
+        """
+        slots = self.runtime.slots
+        newly = slots.update(
+            customer_name=customer_name,
+            phone=phone,
+            street_address=street_address,
+            town=town,
+            problem=problem,
+            system_type=system_type,
+            fuel=fuel,
+            day=day,
+            window=window,
+            sms_consent=sms_consent,
+        )
+
+        if not slots.check_town(self._tenant):
+            # "Never book outside the service area", checked where the town
+            # arrives rather than after six more fields have been collected.
+            return (
+                f"{slots.rejected_town} is outside the service area. Say so in one line "
+                "and suggest they look for a local company. Don't offer a callback."
+            )
+
+        parts = []
+        if phone and slots.phone:
+            # The prompt: read a number back the very next turn, digits spoken.
+            parts.append(f"Read the number back as [slow] {spoken_digits(slots.phone)}.")
+        if slots.complete:
+            parts.append(f"That's everything. Read it back: {slots.readback()}.")
+        else:
+            parts.append(f"Still need {slots.missing_spoken()}.")
+        if not slots.needs_fuel() and slots.system_type:
+            parts.append("Don't ask about fuel for this system type.")
+        recorded = ", ".join(newly) if newly else "nothing new"
+        return f"Recorded {recorded}. " + " ".join(parts)
 
     # ---- writing ---------------------------------------------------------
 
-    def book_appointment(
-        self,
-        *,
-        customer_name: str,
-        phone: str,
-        street_address: str,
-        town: str,
-        problem: str,
-        day: str,
-        window: str,
-        sms_consent: bool = False,
-        system_type: str = "",
-        fuel: str = "",
-    ) -> str:
-        """Reserve a window and make it real.
+    def book_appointment(self, **heard: object) -> str:
+        """Commit the booking that has been assembled so far.
 
-        Called once, at the confirmation step -- not once per field. The prompt
-        collects the details one question at a time; this records the result.
+        Takes no required arguments: it books what :meth:`record_details` wrote
+        down, which means the address that gets booked is the one that was read
+        back, not a re-statement the model may have drifted on. Anything passed
+        here is folded in first, so a model that front-loads every field into
+        one call still works.
         """
         cal = self.runtime.calendar
         if cal is None:
             return "I can't reach the calendar. Let me take a message instead."
+
+        slots = self.runtime.slots
+        slots.update(**heard)
+        if not slots.check_town(self._tenant):
+            return f"{slots.rejected_town} is outside the service area — don't book it."
+        if not slots.complete:
+            return f"Not yet — still need {slots.missing_spoken()}."
+
         try:
-            target = resolve_day(self._tenant, day)
+            target = resolve_day(self._tenant, slots.day)
         except BookingError:
             return "I didn't catch the day. Today, or tomorrow?"
 
@@ -136,15 +202,15 @@ class DeskOperations:
             appt = cal.book(
                 self._tenant,
                 day=target,
-                window_label=window,
-                customer_name=customer_name,
-                phone=phone,
-                street_address=street_address,
-                town=town,
-                problem=problem,
-                system_type=system_type,
-                fuel=fuel,
-                sms_consent=sms_consent,
+                window_label=slots.window,
+                customer_name=slots.customer_name,
+                phone=slots.phone,
+                street_address=slots.street_address,
+                town=slots.town,
+                problem=slots.problem,
+                system_type=slots.system_type,
+                fuel=slots.fuel,
+                sms_consent=bool(slots.sms_consent),
             )
         except UnknownWindow:
             offered = _spoken_list([w.label for w in self._tenant.booking_windows])
@@ -173,26 +239,33 @@ class DeskOperations:
             f"{target.strftime('%A')} {appt.window_label}, for {appt.problem}."
         )
 
-    def dispatch_emergency(
-        self,
-        *,
-        customer_name: str,
-        phone: str,
-        street_address: str,
-        town: str,
-        problem: str,
-    ) -> str:
-        """Send the on-call tech now, ahead of the day's bookings."""
+    def dispatch_emergency(self, **heard: object) -> str:
+        """Send the on-call tech now, ahead of the day's bookings.
+
+        Slot-backed like :meth:`book_appointment`, so an emergency that surfaces
+        halfway through an ordinary booking keeps everything already collected
+        instead of starting the intake over on the worst possible call.
+        """
         cal = self.runtime.calendar
         if cal is None:
             return "I can't reach dispatch. Take their details and flag it urgent."
+
+        slots = self.runtime.slots
+        slots.update(**heard)
+        needed = [f for f in ("customer_name", "phone", "street_address", "town", "problem")
+                  if not getattr(slots, f)]
+        if needed:
+            from dana.agent.slots import SPOKEN  # noqa: PLC0415
+
+            return "Before I can send anyone: " + ", ".join(SPOKEN[f] for f in needed) + "."
+
         appt = cal.dispatch(
             self._tenant,
-            customer_name=customer_name,
-            phone=phone,
-            street_address=street_address,
-            town=town,
-            problem=problem,
+            customer_name=slots.customer_name,
+            phone=slots.phone,
+            street_address=slots.street_address,
+            town=slots.town,
+            problem=slots.problem,
         )
         self.runtime.note_booking(appt)
         return f"On-call tech dispatched to {appt.street_address}, {appt.town}."
@@ -268,65 +341,69 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
         return timed("lookup_customer", ops.lookup_customer)(phone)
 
     @function_tool
-    async def book_appointment(
-        customer_name: str,
-        phone: str,
-        street_address: str,
-        town: str,
-        problem: str,
-        day: str,
-        window: str,
-        sms_consent: bool = False,
+    async def record_details(
+        customer_name: str = "",
+        phone: str = "",
+        street_address: str = "",
+        town: str = "",
+        problem: str = "",
         system_type: str = "",
         fuel: str = "",
+        day: str = "",
+        window: str = "",
+        sms_consent: bool | None = None,
     ) -> str:
-        """Book a service visit once every detail has been collected and read back.
+        """Write down everything the caller just told you, however many things it was.
+
+        Call this whenever the caller gives you any detail, including several at
+        once. Pass only what you actually heard; leave the rest empty. The reply
+        tells you what is still missing, so ask for that and nothing you already
+        have.
 
         Args:
-            customer_name: The caller's name.
-            phone: Their callback number.
-            street_address: House number and street. Required.
-            town: The town, which must be in the service area.
+            customer_name: Their name.
+            phone: Their callback number, digits or spoken.
+            street_address: House number and street.
+            town: The town.
             problem: One line on what is wrong.
-            day: "today", "tomorrow", or a weekday name.
-            window: One of the arrival windows offered, spoken exactly.
-            sms_consent: True only if the caller said yes to the text consent script.
             system_type: Furnace, boiler, air conditioner, mini-split, heat pump.
-            fuel: Only for a furnace or boiler.
+            fuel: Gas or electric. Only ever for a furnace or a boiler.
+            day: "today", "tomorrow", or a weekday name.
+            window: One of the arrival windows you have offered.
+            sms_consent: True only if they said yes to the text consent question.
         """
-        return timed("book_appointment", ops.book_appointment)(
+        return timed("record_details", ops.record_details)(
             customer_name=customer_name,
             phone=phone,
             street_address=street_address,
             town=town,
             problem=problem,
+            system_type=system_type,
+            fuel=fuel,
             day=day,
             window=window,
             sms_consent=sms_consent,
-            system_type=system_type,
-            fuel=fuel,
         )
 
     @function_tool
-    async def dispatch_emergency(
-        customer_name: str, phone: str, street_address: str, town: str, problem: str
-    ) -> str:
-        """Send the on-call technician immediately, for an emergency under the policy.
+    async def book_appointment() -> str:
+        """Commit the booking, after you have read the details back and they confirmed.
 
-        Args:
-            customer_name: The caller's name.
-            phone: Their callback number.
-            street_address: House number and street.
-            town: The town.
-            problem: What is happening.
+        Takes no arguments -- it books exactly what `record_details` recorded,
+        which is what you read back. If anything is still missing it tells you
+        what, and nothing is booked.
         """
-        return timed("dispatch_emergency", ops.dispatch_emergency)(
-            customer_name=customer_name,
-            phone=phone,
-            street_address=street_address,
-            town=town,
-            problem=problem,
-        )
+        return timed("book_appointment", ops.book_appointment)()
+
+    @function_tool
+    async def dispatch_emergency() -> str:
+        """Send the on-call technician now, for an emergency under the policy.
+
+        Takes no arguments, like `book_appointment`. Record the name, number,
+        street address, town and problem with `record_details` first; this tells
+        you if any of them is still missing.
+        """
+        return timed("dispatch_emergency", ops.dispatch_emergency)()
 
     @function_tool
     async def take_message(
@@ -347,6 +424,7 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
     return [
         check_availability,
         lookup_customer,
+        record_details,
         book_appointment,
         dispatch_emergency,
         take_message,

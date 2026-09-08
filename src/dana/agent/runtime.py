@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 from dana.agent.backchannel import BackchannelFilter
 from dana.agent.filler import FillerPolicy, RepetitionTracker
 from dana.agent.safety import SafetyInterceptor
+from dana.agent.slots import BookingSlots
 from dana.delivery.webhook import call_payload
 from dana.desk.calendar import Appointment, CalendarStore
 from dana.desk.messages import Message, MessageStore
@@ -76,6 +77,9 @@ class CallRuntime:
     filler: FillerPolicy = field(default_factory=FillerPolicy)
     repetition: RepetitionTracker = field(default_factory=RepetitionTracker)
     safety: SafetyInterceptor = field(default_factory=SafetyInterceptor)
+    slots: BookingSlots = field(default_factory=BookingSlots)
+    """Working memory for the booking. Callers give three fields in one breath;
+    this is where they land so the agent never asks for one of them twice."""
 
     _trace: TurnTrace | None = None
 
