@@ -36,7 +36,7 @@ from typing import Any
 from dana.agent.nodes import build_agent
 from dana.agent.runtime import CallRuntime
 from dana.agent.tools import DeskOperations
-from dana.delivery import LoggingProvider, SmsSender, WebhookSender
+from dana.delivery import CallArchive, LoggingProvider, SmsSender, WebhookSender
 from dana.delivery.sms import ConsentMissing
 from dana.desk import CalendarStore, MessageStore
 from dana.metrics import JsonlSink
@@ -252,9 +252,16 @@ async def _on_shutdown(runtime: CallRuntime, watchdog: asyncio.Future[Any]) -> N
             # produced two is evaluated twice.
             log.info("no SMS for %s: consent was not captured", appt.appointment_id)
 
+    payload = runtime.post_call_payload()
+
+    # Archive before delivering. The webhook can be down, misconfigured, or not
+    # set up yet; none of those should mean the call went unrecorded, and the
+    # eval harness reads its corpus from here.
+    CallArchive(f"{os.getenv('DANA_DATA_DIR', 'data')}/calls").write(payload)
+
     webhook = _webhook()
     if webhook is not None:
-        await webhook.send(runtime.post_call_payload())
+        await webhook.send(payload)
 
 
 def main() -> None:

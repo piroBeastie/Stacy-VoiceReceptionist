@@ -68,6 +68,11 @@ Three of those numbers moved once the docs were read end to end:
   every boosted town and staff name was silently ignored.
 - Prompt size is measurable and large: **~5,460 tokens in demo mode, ~3,360 for
   a real client.** TTFT scales with it, so the demo-only blocks are not free.
+- The two per-call values sat ~200 tokens into that prompt, so a provider could
+  cache almost none of it — and the timestamp varies by the minute, so even that
+  sliver missed across calls. They now live in a `# This call` section at the
+  very end: **the stable prefix went from ~1% to 99.2%**, and a test fails if
+  anything per-call is added above it.
 
 ### What the harness can and cannot see
 
@@ -89,14 +94,14 @@ should be treated as one until it is measured from the far end.
 | `desk/` | Calendar and message pad — capacity, hours, and refusals |
 | `delivery/` | Post-call webhook and consent-gated SMS |
 | `agent/` | Runtime, filler policy, tools, backchannel, and thin SIP glue |
-| `evals/` | The 8 criteria and 11 data fields, ported verbatim |
+| `evals/` | The 8 criteria and 11 data fields, plus the judge that runs them |
 
 Nothing outside `tenants/` knows a business fact. Nothing outside
 `providers/registry.py` knows a vendor name. Those two rules are what make
 client two cheap and vendor swaps a config change.
 
 A third rule now joins them: **nothing outside `agent/nodes.py` and
-`agent/entrypoint.py` imports the SDK.** All 148 tests run with no vendor
+`agent/entrypoint.py` imports the SDK.** All 219 tests run with no vendor
 package installed, which is why the whole policy layer is testable at all.
 
 ---
@@ -134,6 +139,13 @@ Walk a scripted call through the real calendar, with no SIP trunk and no model
 python scripts/dry_run.py
 ```
 
+Grade archived calls against the 8 criteria — the other half of a model decision:
+
+```bash
+EVAL_API_KEY=... python scripts/eval_calls.py --save baselines/qwen.json
+EVAL_API_KEY=... python scripts/eval_calls.py --compare baselines/qwen.json
+```
+
 ---
 
 ## Build phases and their gates
@@ -148,7 +160,7 @@ Do not pass a gate on impressions. Pass it on `scripts/latency_report.py`.
 | 3 | Prompt port | **Safety-override test green** before anything else | ported + KB, untested live |
 | 4 | Latency work | p50 ≤ 700ms, p95 ≤ 1.1s over ≥50 real calls | |
 | 5 | Behavior parity | Backchannel, barge-in, vendor failover, reconnect | wired, untested live |
-| 6 | Eval port | All 8 criteria running as an LLM-judge harness | data ported |
+| 6 | Eval port | All 8 criteria running as an LLM-judge harness | **done** |
 | 7 | Tools and delivery | Post-call webhook first — it makes the closing line true | code done, needs endpoints |
 
 ### Phase 0 was wrong and is now right
@@ -166,12 +178,28 @@ Timings are now taken inside the pipeline nodes (`agent/nodes.py`), where first
 token and first frame are each observable exactly once, and a turn is closed by
 the *next* turn rather than by the agent starting to speak.
 
-### Phase 3 is a hard stop
+### Phase 3 is a hard stop, and the model is no longer trusted with it
 
-The prompt tells a caller who smells gas to leave the house and call 911. That
-script must come out verbatim, every time, and the agent must not return to
-normal flow afterward. `tests/test_port_fidelity.py::TestSafetyOverride` guards
-the text; a live call has to confirm the behavior before anything else ships.
+The prompt tells a caller who smells gas to leave the house and call 911. Every
+other rule in the prompt is an instruction the model is asked to follow. This one
+is different in kind: an instruction followed 99.5% of the time is an excellent
+instruction and an unacceptable safety control.
+
+So it doesn't reach the model. `agent/safety.py` matches gas-smell and
+carbon-monoxide reports, speaks the script verbatim, and **latches** — every
+later turn repeats the same words. Because the model is never invoked, no tool
+can fire: there is no path from a triggered override to a booking, structurally
+rather than by instruction. The most safety-critical path in the product is now
+also the fastest, since it costs no inference at all.
+
+Detection is deliberately narrow on the word "gas" alone. The booking flow asks
+"gas or electric?" about furnaces on ordinary calls, so a bare mention must not
+trigger; 25 cases are pinned in both directions in `tests/test_safety.py`.
+
+The matching eval criterion is graded by string equality rather than by a judge,
+because "did it say the script" is decidable and a model's opinion of it is not.
+A plausible-sounding paraphrase — *"you should get outside and call 911"* — is
+the failure a model judge waves through and equality catches.
 
 `LLMConfig.temperature` stays at `0.0`. Temperature loosens grip on scripted
 lines, and this is the line that cannot slip. The prompt's "never say the same
@@ -206,6 +234,29 @@ suggestion to a model and these are not suggestions:
   whose `sms_consent` is false. There is no override parameter.
 - **Street address.** `desk/calendar.py` refuses the booking outright, so a bad
   turn cannot produce a visit nobody can drive to.
+
+---
+
+## Choosing a model
+
+Two tables decide it, and neither alone is enough. `scripts/latency_report.py`
+says how fast a stack is; `scripts/eval_calls.py` says whether it still follows
+the rules. Swapping the LLM on one of them is how a faster model quietly stops
+honouring the two-sentence ceiling and nobody finds out for three weeks.
+
+```bash
+EVAL_API_KEY=... python scripts/eval_calls.py --save baselines/qwen.json
+# swap LLM_MODEL, take another 50 calls
+EVAL_API_KEY=... python scripts/eval_calls.py --compare baselines/qwen.json --gate
+```
+
+Pass rate is computed over the calls a criterion *applies to*. Most criteria are
+`unknown` on most calls — nobody asked for the taste, nobody mentioned gas — and
+folding those into the denominator would make every number drift with whatever
+mix of calls happened to be in the corpus.
+
+Point `EVAL_MODEL` at something other than `LLM_MODEL`. Grading a model's output
+with the same model is self-marking, and the judge doesn't need to be fast.
 
 ---
 
@@ -245,7 +296,7 @@ surface remaining.
 python -m pytest -q
 ```
 
-148 tests, none of which need a vendor package. They are not style checks — each
+219 tests, none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

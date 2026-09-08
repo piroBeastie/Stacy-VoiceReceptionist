@@ -197,6 +197,23 @@ class TestEvalParity:
         for item in (*active_criteria(True), *active_fields(True)):
             assert "${" not in item.render(ctx), item.id
 
+    def test_criteria_render_for_a_real_client_too(self, millbrook) -> None:
+        # This is the check that was missing. `persona_held` referenced
+        # ${reseller_short_company} without being demo-only, so rendering the
+        # suite against a client raised KeyError -- the eval harness could not
+        # run at all for the exact case this repo exists to support.
+        client = millbrook.model_copy(update={"demo_mode": False, "reseller": None})
+        ctx = PromptBuilder().context(client)
+        for item in (*active_criteria(False), *active_fields(False)):
+            rendered = item.render(ctx)
+            assert "${" not in rendered, item.id
+            assert "reseller" not in rendered.lower(), item.id
+
+    def test_a_shared_criterion_id_resolves_to_exactly_one_wording(self) -> None:
+        for demo in (True, False):
+            ids = [c.id for c in active_criteria(demo)]
+            assert len(ids) == len(set(ids)), f"duplicate criterion id for demo={demo}"
+
     def test_real_client_drops_demo_only_criteria(self) -> None:
         ids = {c.id for c in active_criteria(demo_mode=False)}
         assert "taste_bounded" not in ids

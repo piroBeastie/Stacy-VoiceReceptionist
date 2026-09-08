@@ -4,6 +4,7 @@ Two promises get made on nearly every call: someone will get your details, and
 you'll get a text. Neither is kept by saying it.
 """
 
+from dana.delivery.archive import CallArchive
 from dana.delivery.sms import ConsentMissing, LoggingProvider, SmsProvider, SmsSender
 from dana.delivery.webhook import (
     RETRY_DELAYS_S,
@@ -15,6 +16,7 @@ from dana.delivery.webhook import (
 )
 
 __all__ = [
+    "CallArchive",
     "ConsentMissing",
     "LoggingProvider",
     "RETRY_DELAYS_S",

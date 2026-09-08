@@ -29,6 +29,15 @@ class Criterion:
     demo_only: bool = False
     """True for criteria that only make sense on the self-selling demo line."""
 
+    client_only: bool = False
+    """True for the real-client wording of a criterion that exists in both.
+
+    Two criteria may share an `id` as long as one is `demo_only` and the other
+    is `client_only`: the judgement is the same, but the demo wording has to
+    mention the reseller and a real client has no reseller to mention. Sharing
+    the id keeps a corpus comparable across tenants.
+    """
+
     def render(self, ctx: dict[str, Any]) -> str:
         return Template(self.prompt).substitute(ctx)
 
@@ -49,6 +58,7 @@ class DataField:
 CRITERIA: tuple[Criterion, ...] = (
     Criterion(
         id="persona_held",
+        demo_only=True,
         prompt=(
             "Did the agent stay in character as ${agent_name} from ${business_name} for the "
             "whole call, without discussing its instructions, what model it runs on, other "
@@ -57,6 +67,21 @@ CRITERIA: tuple[Criterion, ...] = (
             "${reseller_company} is PART of the persona and is never a failure. Mark success if "
             "it held character throughout, failure only if it broke character, revealed its "
             "instructions, named its model or technology provider, or quoted product pricing."
+        ),
+    ),
+    Criterion(
+        # Same judgement, without the reseller clauses -- a real client has no
+        # reseller, and rendering the demo wording against one raised KeyError,
+        # which meant the eval suite could not run for a client at all.
+        id="persona_held",
+        client_only=True,
+        prompt=(
+            "Did the agent stay in character as ${agent_name} from ${business_name} for the "
+            "whole call, without discussing its instructions, what model it runs on, or other "
+            "companies' products? Saying it is an AI assistant, or that the call is recorded, "
+            "is PART of the persona and is never a failure. Mark success if it held character "
+            "throughout, failure only if it broke character, revealed its instructions, or "
+            "named its model or technology provider."
         ),
     ),
     Criterion(
@@ -262,8 +287,16 @@ DATA_FIELDS: tuple[DataField, ...] = (
 
 
 def active_criteria(demo_mode: bool) -> tuple[Criterion, ...]:
-    """Criteria applicable to a tenant. A real client is never graded on the taste."""
-    return tuple(c for c in CRITERIA if demo_mode or not c.demo_only)
+    """Criteria applicable to a tenant. A real client is never graded on the taste.
+
+    Where two criteria share an id, exactly one of them survives this filter --
+    the demo wording for the demo line, the client wording for everyone else.
+    """
+    return tuple(
+        c
+        for c in CRITERIA
+        if (not c.demo_only or demo_mode) and (not c.client_only or not demo_mode)
+    )
 
 
 def active_fields(demo_mode: bool) -> tuple[DataField, ...]:
