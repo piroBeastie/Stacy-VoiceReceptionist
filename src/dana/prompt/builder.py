@@ -23,7 +23,18 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _DEFAULT_TEMPLATE = "receptionist.md.j2"
 
 RUNTIME_PLACEHOLDERS = ("{{system__time}}", "{{system__caller_id}}")
-"""Filled per-turn, not at render time. Asserted present by :meth:`PromptBuilder.render`."""
+"""Filled per-call, not at render time. Asserted present by :meth:`PromptBuilder.render`.
+
+Both live in a `# This call` section at the very *end* of the template, and that
+placement is load-bearing rather than stylistic. Prompt caching keys on a prefix:
+everything before the first byte that varies is cacheable, everything after it is
+not. These two lines used to sit in the Environment section about 200 tokens in,
+which left roughly 5,200 tokens of stable rules re-prefilled on every turn of
+every call. The timestamp also varies by the minute, so the small cacheable
+prefix missed across calls as well.
+
+Anything added to this template that changes per call belongs below them.
+"""
 
 
 def _spoken_list(items: list[str]) -> str:

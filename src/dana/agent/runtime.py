@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from dana.agent.backchannel import BackchannelFilter
 from dana.agent.filler import FillerPolicy, RepetitionTracker
+from dana.agent.safety import SafetyInterceptor
 from dana.delivery.webhook import call_payload
 from dana.desk.calendar import Appointment, CalendarStore
 from dana.desk.messages import Message, MessageStore
@@ -35,7 +36,9 @@ from dana.tenants.models import Tenant
 
 log = logging.getLogger("dana.agent")
 
-Outcome = Literal["answered", "booked", "dispatched", "message", "abandoned"]
+Outcome = Literal[
+    "answered", "booked", "dispatched", "message", "abandoned", "safety_override"
+]
 
 
 @dataclass
@@ -72,6 +75,7 @@ class CallRuntime:
     backchannel: BackchannelFilter = field(default_factory=BackchannelFilter)
     filler: FillerPolicy = field(default_factory=FillerPolicy)
     repetition: RepetitionTracker = field(default_factory=RepetitionTracker)
+    safety: SafetyInterceptor = field(default_factory=SafetyInterceptor)
 
     _trace: TurnTrace | None = None
 
@@ -165,11 +169,23 @@ class CallRuntime:
     # ---- conversation ---------------------------------------------------
 
     def record_user(self, text: str) -> None:
-        """Log a caller utterance and unlock fillers."""
+        """Log a caller utterance, run the safety scan, and unlock fillers.
+
+        The scan happens here *and* at generation time. They are independent on
+        purpose: preemptive generation can start the model on interim text
+        before this event fires, so neither path may assume it ran first. The
+        interceptor latches, which makes the double scan harmless.
+        """
         if not text.strip():
             return
         self.transcript.append({"role": "user", "text": text})
         self.filler.on_user_message()
+        if self.safety.scan(text) and self.outcome != "safety_override":
+            log.warning(
+                "call %s: safety override latched on %r", self.call_id, self.safety.trigger_phrase
+            )
+            self.outcome = "safety_override"
+            self.annotate(safety_override=True)
 
     def record_agent(self, text: str) -> None:
         """Log an agent utterance and count it if it repeats an earlier one."""
@@ -195,14 +211,24 @@ class CallRuntime:
         """Record a completed booking as the call's outcome.
 
         An emergency dispatch outranks a routine booking made earlier in the
-        same call: it is the thing the office needs to see first.
+        same call: it is the thing the office needs to see first. A latched
+        safety override outranks both, and should be unreachable anyway --
+        the interceptor bypasses the model, so no tool can be called after it
+        fires. The guard is here because "should be unreachable" is not a
+        property worth trusting on this particular path.
         """
         self.appointments.append(appt)
+        if self.outcome == "safety_override":
+            log.error(
+                "call %s: a booking was recorded after the safety override latched",
+                self.call_id,
+            )
+            return
         if appt.kind == "emergency" or self.outcome != "dispatched":
             self.outcome = "dispatched" if appt.kind == "emergency" else "booked"
 
     def note_message(self, msg: Message) -> None:
-        """Record a taken message, unless a booking already happened."""
+        """Record a taken message, unless something louder already happened."""
         self.message = msg
         if self.outcome == "answered":
             self.outcome = "message"
@@ -248,6 +274,15 @@ class CallRuntime:
                 else None
             ),
             latency=latency,
+            safety=(
+                {
+                    "override_fired": True,
+                    "trigger_phrase": self.safety.trigger_phrase,
+                    "turns_repeated": self.safety.triggers,
+                }
+                if self.safety.latched
+                else None
+            ),
         )
 
     def finish(self) -> None:

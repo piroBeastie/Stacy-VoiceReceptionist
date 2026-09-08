@@ -65,7 +65,24 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
             synthesized by the same TTS connection and lands in the transcript
             as something the agent said -- which it is. That does mean it enters
             the chat context; the platform's soft timeout behaves the same way.
+
+            Before any of that: the gas/CO override. If it has latched, the
+            model is not called at all. That is what makes it a control rather
+            than an instruction -- there is no sampling step to go wrong, no
+            tool that can fire, and no token budget between the caller saying
+            "I smell gas" and hearing what to do.
             """
+            spoken = _last_user_text(chat_ctx)
+            runtime.safety.scan(spoken)
+            if runtime.safety.latched:
+                script = runtime.safety.response(quiet=not spoken)
+                if script:
+                    runtime.mark(Stage.LLM_FIRST_TOKEN, safety_override=True)
+                    runtime.record_agent(script)
+                    log.warning("call %s: speaking safety override", runtime.call_id)
+                    yield script
+                return
+
             upstream = super().llm_node(chat_ctx, tools, model_settings)
             iterator = upstream.__aiter__()
             pending: asyncio.Task[Any] | None = None
@@ -111,6 +128,32 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                 yield frame
 
     return InstrumentedAgent()
+
+
+def _last_user_text(chat_ctx: Any) -> str:
+    """The caller's most recent words, whatever shape the SDK holds them in.
+
+    Read from the context rather than from the transcript event, because
+    preemptive generation can start a turn on interim text before that event
+    fires. Written against several plausible attribute names so a rename
+    degrades to an empty string -- and an empty string is the *quiet* branch of
+    the override, which is the safe direction to fail in.
+    """
+    items = getattr(chat_ctx, "items", None) or getattr(chat_ctx, "messages", None) or []
+    for item in reversed(list(items)):
+        if getattr(item, "role", None) != "user":
+            continue
+        text = getattr(item, "text_content", None)
+        if callable(text):
+            text = text()
+        if text is None:
+            content = getattr(item, "content", None)
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, (list, tuple)):
+                text = " ".join(c for c in content if isinstance(c, str))
+        return (text or "").strip()
+    return ""
 
 
 def _is_final(event: Any) -> bool:

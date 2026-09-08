@@ -151,6 +151,21 @@ class TestTenantParameterization:
         assert "{{system__time}}" in prompt
         assert "{{system__caller_id}}" in prompt
 
+    def test_the_volatile_lines_stay_at_the_very_end(self, prompt: str) -> None:
+        # Prompt caching keys on a prefix: everything before the first byte
+        # that varies per call is cacheable, everything after it is not. These
+        # two placeholders used to sit ~200 tokens in, leaving 5,200 tokens of
+        # stable rules re-prefilled on every turn. Anything added to the
+        # template that changes per call belongs below them.
+        first_volatile = min(
+            prompt.index("{{system__time}}"), prompt.index("{{system__caller_id}}")
+        )
+        cacheable = first_volatile / len(prompt)
+        assert cacheable > 0.95, (
+            f"only {cacheable:.1%} of the prompt is a stable prefix; something "
+            "per-call was added above the 'This call' section"
+        )
+
     def test_runtime_fill_blanks_unknown_caller(self, prompt: str) -> None:
         # The prompt branches on "if nothing appears after 'is'", so an unknown
         # caller must produce an empty string, never the literal "None".

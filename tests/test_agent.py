@@ -345,6 +345,85 @@ class TestDeskOperations:
         )
 
 
+class TestSafetyOverrideAtRuntime:
+    """The interceptor's effect on the call, not its detection (see test_safety)."""
+
+    def test_a_gas_report_sets_the_outcome(self, runtime: CallRuntime) -> None:
+        runtime.record_user("I smell gas in the basement")
+        assert runtime.outcome == "safety_override"
+
+    def test_the_outcome_survives_everything_after_it(self, runtime: CallRuntime) -> None:
+        runtime.record_user("I smell gas")
+        runtime.record_user("but can you still come tomorrow at two")
+        assert runtime.outcome == "safety_override"
+
+    def test_a_booking_cannot_overwrite_it(self, runtime: CallRuntime) -> None:
+        # Unreachable in practice -- the interceptor bypasses the model, so no
+        # tool can fire. Asserted anyway: this is not a path to leave to luck.
+        runtime.record_user("carbon monoxide alarm going off")
+        ops = DeskOperations(runtime)
+        ops.book_appointment(
+            customer_name="Dan",
+            phone="+12035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="no heat",
+            day="tomorrow",
+            window="two to five",
+        )
+        assert runtime.outcome == "safety_override"
+
+    def test_an_ordinary_furnace_call_is_untouched(self, runtime: CallRuntime) -> None:
+        # The booking flow asks "gas or electric?" -- this must not latch.
+        runtime.record_user("it's a gas furnace, about ten years old")
+        assert runtime.outcome == "answered"
+        assert not runtime.safety.latched
+
+    def test_the_payload_leads_with_it(self, runtime: CallRuntime) -> None:
+        runtime.record_user("I think there's a gas leak")
+        payload = runtime.post_call_payload()
+        assert payload["outcome"] == "safety_override"
+        assert payload["safety"]["override_fired"] is True
+        assert "gas leak" in payload["safety"]["trigger_phrase"]
+
+    def test_an_ordinary_call_carries_no_safety_block(self, runtime: CallRuntime) -> None:
+        runtime.record_user("my furnace is out")
+        assert runtime.post_call_payload()["safety"] is None
+
+
+class TestLastUserText:
+    """Reading the caller's words back out of whatever shape the SDK uses."""
+
+    class _Item:
+        def __init__(self, role: str, text: str) -> None:
+            self.role = role
+            self.text_content = text
+
+    def test_takes_the_most_recent_user_turn(self) -> None:
+        from dana.agent.nodes import _last_user_text
+
+        ctx = type("Ctx", (), {"items": [
+            self._Item("user", "first"),
+            self._Item("assistant", "reply"),
+            self._Item("user", "second"),
+        ]})()
+        assert _last_user_text(ctx) == "second"
+
+    def test_an_unknown_shape_degrades_to_empty(self) -> None:
+        # Empty routes to the *quiet* branch of the override, which is the safe
+        # direction to fail in.
+        from dana.agent.nodes import _last_user_text
+
+        assert _last_user_text(object()) == ""
+
+    def test_list_content_is_joined(self) -> None:
+        from dana.agent.nodes import _last_user_text
+
+        item = type("I", (), {"role": "user", "text_content": None, "content": ["I smell", "gas"]})()
+        ctx = type("Ctx", (), {"items": [item]})()
+        assert _last_user_text(ctx) == "I smell gas"
+
+
 class TestPostCallPayload:
     def test_a_booked_call_carries_the_appointment(self, runtime: CallRuntime) -> None:
         ops = DeskOperations(runtime)

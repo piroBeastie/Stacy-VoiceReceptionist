@@ -185,6 +185,7 @@ def call_payload(
     appointments: list[dict[str, Any]] | None = None,
     message: dict[str, Any] | None = None,
     latency: dict[str, float] | None = None,
+    safety: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the post-call payload.
 
@@ -207,5 +208,8 @@ def call_payload(
         "appointments": appointments or [],
         "message": message,
         "latency": latency or {},
+        # Present only when the gas/CO override fired. A consumer should treat
+        # its presence as the headline of the call regardless of `outcome`.
+        "safety": safety,
         "sent_at": int(time.time()),
     }
