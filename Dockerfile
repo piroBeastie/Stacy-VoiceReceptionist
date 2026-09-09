@@ -60,6 +60,12 @@ VOLUME ["/app/data"]
 HEALTHCHECK --interval=60s --timeout=20s --start-period=30s --retries=2 \
     CMD python scripts/preflight.py > /dev/null || exit 1
 
+# Greetings are deliberately NOT pre-rendered here. It would need vendor API
+# keys at build time, and a key baked into an image leaks to anyone who can pull
+# it. Run scripts/prerender_greetings.py as a deploy step instead; the worker
+# renders on first use regardless, so a skipped step costs one caller ~400ms,
+# not correctness.
+
 # `start` is the production mode: register with LiveKit and wait for jobs.
 # Override with `dev` for autoreload, or `console` to talk to it over your mic.
 CMD ["python", "-m", "dana.agent.entrypoint", "start"]

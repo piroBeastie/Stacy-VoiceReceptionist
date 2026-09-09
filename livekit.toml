@@ -1,0 +1,12 @@
+# LiveKit Cloud Agents deployment.
+#
+# `agent_name` must match the name the worker registers under (DANA_AGENT_NAME)
+# and the name in the SIP dispatch rule. All three are the same string on
+# purpose: a mismatch is a call that connects, creates a room, and is joined by
+# nobody -- which looks like silence to the caller and like success everywhere
+# else.
+[project]
+  subdomain = "dana-43lqutrn"
+
+[agent]
+  id = "dana"

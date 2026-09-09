@@ -34,6 +34,7 @@ import os
 import re
 from typing import Any
 
+from dana.agent import greeting
 from dana.agent.nodes import build_agent
 from dana.agent.runtime import CallRuntime
 from dana.agent.tools import DeskOperations
@@ -206,10 +207,19 @@ async def entrypoint(ctx: Any) -> None:
     # It stays interruptible by default -- a caller who talks over "thanks for
     # calling" was previously both ignored and untranscribed, losing their
     # opening sentence entirely.
-    await session.say(
-        runtime.tenant.greeting,
-        allow_interruptions=cfg.turn.first_message_interruptible,
+    # Pre-rendered if we have it. The greeting is the one utterance fully known
+    # before the phone rings, and synthesising it live puts 330-570ms of TTS
+    # first-byte latency in the gap between the caller saying "hello?" and the
+    # business answering -- the one stall no filler can cover, because it comes
+    # before the first word. From cache it is under a millisecond.
+    audio = await greeting.prepare(
+        runtime.tenant, cfg.tts, f"{os.getenv('DANA_DATA_DIR', 'data')}/greetings", build_tts
     )
+    say_kwargs: dict[str, Any] = {"allow_interruptions": cfg.turn.first_message_interruptible}
+    if audio is not None:
+        say_kwargs["audio"] = audio
+
+    await session.say(runtime.tenant.greeting, **supported(session.say, say_kwargs))
     runtime.record_agent(runtime.tenant.greeting)
 
 

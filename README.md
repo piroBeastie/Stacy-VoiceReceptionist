@@ -53,6 +53,11 @@ it to µ-law for the SIP leg, which is not a resample. The plugin's own default,
 `mp3_22050_32`, would have been an MP3 decode *plus* a 22050→8000 resample on
 every utterance.
 
+The greeting is the exception to all of it: it is pre-rendered and played from
+disk. Measured against the live API, synthesising it cost 334–572ms before the
+caller heard a syllable, versus 0.4ms from cache. It is the one stall no filler
+can cover, because it happens before the first word.
+
 ### Where the milliseconds are
 
 | Stage | Typical | Target | Owner |
@@ -269,7 +274,43 @@ Call the number. The first call is the one that turns every latency figure in
 this README from a budget into a measurement — the trace lands in
 `data/traces/`, and `scripts/latency_report.py` reads it.
 
-### 3. Production
+### 3. LiveKit Cloud Agents
+
+LiveKit hosts the worker itself, so there is no container to run anywhere else.
+It builds from the `Dockerfile` in this repo and reads `livekit.toml`.
+
+```bash
+lk agent create          # first time only
+lk agent deploy
+lk agent logs -f
+```
+
+`livekit.toml`'s `agent.id`, the worker's `DANA_AGENT_NAME`, and the SIP
+dispatch rule's `agent_name` are all `dana`, and they have to stay that way. A
+mismatch between any two is a call that connects, creates a room, and is joined
+by nobody — silence to the caller, success in every dashboard.
+
+Secrets are **not** in the image: `.dockerignore` excludes `.env` precisely so
+that an image cannot leak vendor keys to anyone who can pull it. Set them on the
+deployment instead:
+
+```bash
+lk agent update-secrets --secrets-file .env
+```
+
+Two deploy-time steps worth running, in this order:
+
+```bash
+python scripts/preflight.py --live      # every key proven before anything ships
+python scripts/prerender_greetings.py   # so the first caller is not the one who waits
+```
+
+The greeting cache lives under `DANA_DATA_DIR`. On hosted infrastructure that is
+ephemeral, so the first call in a fresh instance re-renders it once and every
+call after is warm — correct either way, just cheaper if you pre-render.
+
+### 3b. Your own container
+
 
 ```bash
 docker build -t dana .

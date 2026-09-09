@@ -1,0 +1,17 @@
+# Keep the build context small and the image clean of anything call-specific.
+.venv/
+.git/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Never bake credentials into an image. .env is the file that holds every
+# vendor key; an image carrying it leaks them to anyone who can pull it.
+.env
+
+# Real call data: transcripts, bookings, traces. Belongs on a mounted volume,
+# not in a layer that gets pushed to a registry.
+data/
+baselines/
