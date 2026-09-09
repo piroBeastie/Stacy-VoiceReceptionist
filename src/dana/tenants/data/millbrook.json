@@ -1,55 +1,131 @@
 {
   "tenant_id": "millbrook",
-  "phone_number": "+18603989358",
-
+  "phone_number": "+12138451295",
   "business_name": "Millbrook Heating and Cooling",
   "trade": "HVAC",
   "city": "Wallingford",
   "state": "Connecticut",
   "timezone": "America/New_York",
-
   "agent_name": "Casey",
   "agent_persona": "You are warm, unhurried, and plainspoken. You sound like someone who has worked the desk for years, not a call center.\nYou know the trade well enough to be useful, but you leave diagnosis to the technicians.\nYou like this job. You're quick, a little dry, and you enjoy it when someone tries to trip you up.",
-
-  "service_area": ["Wallingford", "Meriden", "Cheshire", "Hamden", "North Haven"],
-
+  "service_area": [
+    "Wallingford",
+    "Meriden",
+    "Cheshire",
+    "Hamden",
+    "North Haven"
+  ],
   "staff": [
-    { "name": "Dave", "role": "technician" },
-    { "name": "Lisa", "role": "office" }
+    {
+      "name": "Dave",
+      "role": "technician"
+    },
+    {
+      "name": "Lisa",
+      "role": "office"
+    }
   ],
-
   "booking_windows": [
-    { "label": "eight to eleven", "start": "08:00", "end": "11:00" },
-    { "label": "eleven to two", "start": "11:00", "end": "14:00" },
-    { "label": "two to five", "start": "14:00", "end": "17:00" }
+    {
+      "label": "eight to eleven",
+      "start": "08:00",
+      "end": "11:00"
+    },
+    {
+      "label": "eleven to two",
+      "start": "11:00",
+      "end": "14:00"
+    },
+    {
+      "label": "two to five",
+      "start": "14:00",
+      "end": "17:00"
+    }
   ],
-
   "hours": [
-    { "day": "monday", "open_at": "08:00", "close_at": "17:00" },
-    { "day": "tuesday", "open_at": "08:00", "close_at": "17:00" },
-    { "day": "wednesday", "open_at": "08:00", "close_at": "17:00" },
-    { "day": "thursday", "open_at": "08:00", "close_at": "17:00" },
-    { "day": "friday", "open_at": "08:00", "close_at": "17:00" },
-    { "day": "saturday", "open_at": "09:00", "close_at": "13:00" },
-    { "day": "sunday" }
+    {
+      "day": "monday",
+      "open_at": "08:00",
+      "close_at": "17:00"
+    },
+    {
+      "day": "tuesday",
+      "open_at": "08:00",
+      "close_at": "17:00"
+    },
+    {
+      "day": "wednesday",
+      "open_at": "08:00",
+      "close_at": "17:00"
+    },
+    {
+      "day": "thursday",
+      "open_at": "08:00",
+      "close_at": "17:00"
+    },
+    {
+      "day": "friday",
+      "open_at": "08:00",
+      "close_at": "17:00"
+    },
+    {
+      "day": "saturday",
+      "open_at": "09:00",
+      "close_at": "13:00"
+    },
+    {
+      "day": "sunday"
+    }
   ],
-
   "services": [
-    { "name": "Diagnostic visit", "price_low": 89, "price_high": 129, "note": "waived if you book the repair" },
-    { "name": "Furnace repair", "price_low": 150, "price_high": 800 },
-    { "name": "Air conditioning repair", "price_low": 150, "price_high": 900 },
-    { "name": "Seasonal tune-up", "price_low": 119, "price_high": 179 },
-    { "name": "System replacement", "note": "free quote, and financing is available" }
+    {
+      "name": "Diagnostic visit",
+      "price_low": 89,
+      "price_high": 129,
+      "note": "waived if you book the repair"
+    },
+    {
+      "name": "Furnace repair",
+      "price_low": 150,
+      "price_high": 800
+    },
+    {
+      "name": "Air conditioning repair",
+      "price_low": 150,
+      "price_high": 900
+    },
+    {
+      "name": "Seasonal tune-up",
+      "price_low": 119,
+      "price_high": 179
+    },
+    {
+      "name": "System replacement",
+      "note": "free quote, and financing is available"
+    }
   ],
-
   "faqs": [
-    { "question": "Do you charge for estimates on a replacement?", "answer": "No, replacement quotes are free. Repair diagnostics carry the visit fee." },
-    { "question": "How soon can someone come out?", "answer": "Usually same day or next day, depending on the window." },
-    { "question": "Do you work on mini-splits?", "answer": "Yes, both service and installation." },
-    { "question": "What brands do you service?", "answer": "All major brands." },
-    { "question": "Do you offer financing?", "answer": "Yes, on replacements. The office walks through the options." }
+    {
+      "question": "Do you charge for estimates on a replacement?",
+      "answer": "No, replacement quotes are free. Repair diagnostics carry the visit fee."
+    },
+    {
+      "question": "How soon can someone come out?",
+      "answer": "Usually same day or next day, depending on the window."
+    },
+    {
+      "question": "Do you work on mini-splits?",
+      "answer": "Yes, both service and installation."
+    },
+    {
+      "question": "What brands do you service?",
+      "answer": "All major brands."
+    },
+    {
+      "question": "Do you offer financing?",
+      "answer": "Yes, on replacements. The office walks through the options."
+    }
   ],
-
   "emergency_policy": {
     "conditions": [
       "no heat when it is at or below freezing outside",
@@ -59,14 +135,26 @@
     ],
     "after_hours": true
   },
-
   "capacity_per_window": 2,
-
   "asr_keywords": [
-    "okay", "ok", "yes", "yep", "yeah", "no", "nope", "bye", "sure", "hello",
-    "Wallingford", "Meriden", "Cheshire", "Hamden", "North Haven", "Casey", "Miles"
+    "okay",
+    "ok",
+    "yes",
+    "yep",
+    "yeah",
+    "no",
+    "nope",
+    "bye",
+    "sure",
+    "hello",
+    "Wallingford",
+    "Meriden",
+    "Cheshire",
+    "Hamden",
+    "North Haven",
+    "Casey",
+    "Miles"
   ],
-
   "demo_mode": true,
   "reseller": {
     "company": "QuickFlip Digital",
@@ -77,10 +165,8 @@
     "callback_hours": "eight in the morning to five-thirty in the evening",
     "callback_timezone": "Eastern"
   },
-
   "voice_id": "eVItLK1UvXctxuaRV2Oq",
   "greeting": "Thanks for calling Millbrook Heating and Cooling, this is Casey, the AI assistant — heads up, this call's recorded. What can I help you with?",
-
   "recording_disclosure_required": true,
   "sms_consent_required": true
 }

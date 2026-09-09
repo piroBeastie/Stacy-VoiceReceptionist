@@ -26,7 +26,10 @@ def store() -> TenantStore:
 
 @pytest.fixture(scope="module")
 def millbrook(store: TenantStore):
-    return store.for_number("+18603989358")
+    # By id, not by number. The tenant_id is the stable identity; the phone
+    # number is deployment configuration and changes when a trunk changes --
+    # which should never take the test suite down with it.
+    return store.get("millbrook")
 
 
 @pytest.fixture(scope="module")
