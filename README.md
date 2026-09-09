@@ -280,23 +280,35 @@ LiveKit hosts the worker itself, so there is no container to run anywhere else.
 It builds from the `Dockerfile` in this repo and reads `livekit.toml`.
 
 ```bash
-lk agent create          # first time only
-lk agent deploy
-lk agent logs -f
+lk agent create --secrets-file .env --ignore-empty-secrets --region us-east .
+lk agent deploy --secrets-file .env --ignore-empty-secrets
+lk agent status
+lk agent logs
 ```
 
-`livekit.toml`'s `agent.id`, the worker's `DANA_AGENT_NAME`, and the SIP
-dispatch rule's `agent_name` are all `dana`, and they have to stay that way. A
-mismatch between any two is a call that connects, creates a room, and is joined
-by nobody — silence to the caller, success in every dashboard.
+`--region` is required non-interactively; the choices are `us-east`,
+`eu-central`, `ap-south`. Pick it by where the *callers and vendors* are, not
+where you are: the worker's per-turn round trips go to Deepgram, Anthropic and
+ElevenLabs, and its audio goes to a phone number. A worker near you and far from
+both is the wrong optimisation. `--ignore-empty-secrets` matters because
+`.env.example` ships keys deliberately blank, and without it the deploy fails
+rather than skipping them.
 
 Secrets are **not** in the image: `.dockerignore` excludes `.env` precisely so
-that an image cannot leak vendor keys to anyone who can pull it. Set them on the
-deployment instead:
+an image cannot leak vendor keys to anyone who can pull it. They are injected as
+environment variables on the deployment instead, which is what `--secrets-file`
+does. To change them later:
 
 ```bash
 lk agent update-secrets --secrets-file .env
 ```
+
+`livekit.toml`'s `agent.id` is LiveKit's own agent identifier — `lk` rewrites it
+to a `CA_...` value on first create, so do not hand-set it to the agent name.
+The *registered* name comes from `DANA_AGENT_NAME`, and it has to match the SIP
+dispatch rule's `agent_name`. A mismatch between those two is a call that
+connects, creates a room, and is joined by nobody — silence to the caller,
+success in every dashboard.
 
 Two deploy-time steps worth running, in this order:
 
