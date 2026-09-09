@@ -48,6 +48,7 @@ from dana.providers.registry import (
     build_turn_detector,
     build_vad,
     prewarm as prewarm_models,
+    register_plugins,
     supported,
 )
 from dana.tenants import TenantStore
@@ -304,6 +305,12 @@ def main() -> None:
 
     load_dotenv()
     logging.basicConfig(level=os.getenv("DANA_LOG_LEVEL", "INFO"))
+
+    # Must happen here, on the main thread. livekit-agents registers a plugin
+    # when its module is imported and refuses to do so from a worker thread, so
+    # leaving it to the first lazy import inside prewarm made prewarm fail and
+    # pushed model loading into the first call, where the caller hears it.
+    register_plugins()
 
     opts: dict[str, Any] = {"entrypoint_fnc": entrypoint, "prewarm_fnc": prewarm}
 

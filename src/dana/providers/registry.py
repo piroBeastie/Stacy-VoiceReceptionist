@@ -16,6 +16,7 @@ TypeError on the first inbound call.
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import logging
 import os
@@ -170,6 +171,38 @@ def build_stt(cfg: STTConfig) -> Any:
         return cartesia.STT(**supported(cartesia.STT, {"model": cfg.model, "language": cfg.language}))
 
     raise ValueError(f"unknown STT vendor {cfg.vendor!r}")
+
+
+def register_plugins() -> None:
+    """Import the vendor plugins on the main thread, before any worker starts.
+
+    livekit-agents registers a plugin as a side effect of importing its module,
+    and refuses to do that off the main thread. Every import in this file is
+    lazy and inside a function -- which is what keeps the test suite vendor-free
+    -- so the first import happened inside `prewarm`, on a job-runner thread,
+    and raised. Prewarm then fell back to loading the models inline on the first
+    call, which is the exact stall it was written to remove: the caller waits
+    through a disk read and a session build after the line connects.
+
+    Called from `main()` before `cli.run_app`, so registration happens once, on
+    the main thread, while nobody is listening.
+    """
+    for module in (
+        "livekit.plugins.silero",
+        "livekit.plugins.turn_detector",
+        "livekit.plugins.deepgram",
+        "livekit.plugins.elevenlabs",
+        "livekit.plugins.openai",
+        "livekit.plugins.anthropic",
+        "livekit.plugins.cartesia",
+        "livekit.plugins.assemblyai",
+    ):
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            # Optional vendors. A tenant configured for one that is not
+            # installed fails later, in build_*, naming the vendor.
+            log.debug("%s not installed", module)
 
 
 def _opt_float(name: str, default: float | None) -> float | None:
@@ -353,27 +386,30 @@ def build_vad() -> Any:
 
 
 def prewarm(userdata: dict[str, Any], *, turn: TurnConfig | None = None) -> None:
-    """Load the local models once per worker process, before any call arrives.
+    """Load Silero once per worker process, before any call arrives.
 
-    Both Silero and the end-of-utterance transformer read weights off disk and
-    build a session. Constructing them inside the job entrypoint -- which is
-    where they used to live -- put that cost between the caller hearing a ring
-    and the agent saying anything, on every cold process.
+    Silero reads weights off disk and builds a session. Constructing it inside
+    the job entrypoint -- which is where it used to live -- put that cost
+    between the caller hearing a ring and the agent saying anything, on every
+    cold process.
+
+    The end-of-utterance detector is deliberately **not** prewarmed here, though
+    it used to be attempted. On livekit-agents 1.8 its weights live in the
+    worker's shared inference executor, which is started once and serves every
+    job; the object built per call is only a handle to it, and constructing that
+    handle outside a job raises "no job context found". So the expensive half is
+    already warm by the time a call lands, and trying to hoist the cheap half
+    produced a stack trace on every job runner at startup and warned about a
+    stall that was not happening.
 
     Failures here are logged and swallowed: a worker that cannot prewarm should
     still take calls, just slower on the first one.
     """
-    turn = turn or TurnConfig()
+    del turn  # kept for call-site compatibility; see above
     try:
         userdata["vad"] = build_vad()
     except Exception:  # noqa: BLE001 - a cold VAD is better than a dead worker
         log.exception("VAD prewarm failed; the first call will load it inline")
-    try:
-        detector = build_turn_detector(turn)
-        if detector is not None:
-            userdata["turn_detector"] = detector
-    except Exception:  # noqa: BLE001
-        log.exception("turn-detector prewarm failed; the first call will load it inline")
 
 
 __all__ = [

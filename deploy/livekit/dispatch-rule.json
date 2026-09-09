@@ -1,9 +1,18 @@
 {
   "name": "dana-dispatch",
-  "trunk_ids": [],
+  "trunk_ids": [
+    "PN_PPN_Dypp79CN8teV"
+  ],
   "rule": {
     "dispatchRuleIndividual": {
       "roomPrefix": "call"
     }
+  },
+  "room_config": {
+    "agents": [
+      {
+        "agent_name": "dana"
+      }
+    ]
   }
 }
