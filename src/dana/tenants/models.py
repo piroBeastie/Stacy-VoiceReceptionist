@@ -181,6 +181,21 @@ class Tenant(BaseModel):
     reseller: Reseller | None = None
 
     voice_id: str = Field(description="TTS vendor voice id")
+    voice_speed: float = Field(
+        default=1.0,
+        ge=0.7,
+        le=1.2,
+        description="Delivery pace. Past 1.2 consonants start clipping on 8kHz "
+        "telephony, which costs comprehension faster than it buys energy.",
+    )
+    voice_stability: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Lower varies the delivery more, which is most of what reads "
+        "as energetic; higher is steadier and flatter.",
+    )
+    voice_similarity: float = Field(default=0.8, ge=0.0, le=1.0)
     greeting: str = Field(description="Verbatim first message, including any AI/recording notice")
 
     recording_disclosure_required: bool = True

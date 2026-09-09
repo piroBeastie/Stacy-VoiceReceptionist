@@ -233,9 +233,28 @@ class TestAudioPath:
         assert cfg.tts.audio_format == TELEPHONY_FORMAT
 
     def test_voice_and_keywords_carry_over(self, millbrook) -> None:
+        # Asserted against the tenant, not a literal. Pinning the id here meant
+        # that recasting the voice -- an ordinary business decision -- failed
+        # the suite, which teaches people to edit the test rather than read it.
         cfg = pipeline_for(millbrook)
-        assert cfg.tts.voice_id == "eVItLK1UvXctxuaRV2Oq"
+        assert cfg.tts.voice_id == millbrook.voice_id
         assert len(cfg.stt.keywords) == 17
+
+    def test_delivery_comes_from_the_tenant_too(self, millbrook) -> None:
+        # One client wants a brisk receptionist, another an unhurried one. That
+        # is not an infrastructure default to be shared between them.
+        cfg = pipeline_for(millbrook)
+        assert cfg.tts.speed == millbrook.voice_speed
+        assert cfg.tts.stability == millbrook.voice_stability
+        assert cfg.tts.similarity_boost == millbrook.voice_similarity
+
+    def test_speed_past_the_telephony_ceiling_is_refused(self, millbrook) -> None:
+        # Past 1.2 consonants clip at 8kHz, costing comprehension faster than it
+        # buys energy -- so it is a validation error, not a judgement call.
+        from dana.tenants import Tenant
+
+        with pytest.raises(ValueError):
+            Tenant.model_validate({**millbrook.model_dump(), "voice_speed": 1.6})
 
     def test_interim_results_on_for_preemptive_generation(self, millbrook) -> None:
         cfg = pipeline_for(millbrook)

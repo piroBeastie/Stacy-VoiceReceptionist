@@ -117,9 +117,12 @@ def pipeline_for(tenant: Tenant, *, overrides: PipelineConfig | None = None) -> 
             vendor=base.tts.vendor,
             model=os.getenv("TTS_MODEL", base.tts.model),
             voice_id=tenant.voice_id,
-            stability=base.tts.stability,
-            similarity_boost=base.tts.similarity_boost,
-            speed=base.tts.speed,
+            # Delivery is business-shaped, like the voice itself: one client
+            # wants a brisk receptionist, another wants an unhurried one, and
+            # that is not an infrastructure setting to be shared between them.
+            stability=tenant.voice_stability,
+            similarity_boost=tenant.voice_similarity,
+            speed=tenant.voice_speed,
             first_chunk_chars=base.tts.first_chunk_chars,
             chunk_length_schedule=base.tts.chunk_length_schedule,
         ),
