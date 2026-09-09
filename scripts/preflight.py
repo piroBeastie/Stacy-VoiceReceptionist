@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -155,6 +156,78 @@ def check_tenants(tenant_dir: str) -> None:
         check(WARN, "DANA_DEFAULT_TENANT", "unset — console and dev mode cannot route a call")
 
 
+def check_sip(tenant_dir: str) -> None:
+    """The generated SIP config, and whether it still matches the tenants.
+
+    The dialed number is the routing key. If the LiveKit trunk carries a number
+    no tenant claims, the call connects, the room is created, and the agent
+    raises KeyError with a customer on the line -- so a drift between these two
+    files is worth catching on the ground.
+    """
+    trunk_file = Path("deploy/livekit/inbound-trunk.json")
+    rule_file = Path("deploy/livekit/dispatch-rule.json")
+    if not trunk_file.exists():
+        check(WARN, "SIP config", "not generated yet — run scripts/sip_config.py")
+        return
+
+    try:
+        trunk = json.loads(trunk_file.read_text(encoding="utf-8"))
+        configured = set(trunk["trunk"]["numbers"])
+    except Exception as exc:  # noqa: BLE001
+        check(FAIL, "SIP config", f"{trunk_file}: {exc}")
+        return
+
+    try:
+        claimed = {t.phone_number for t in TenantStore(tenant_dir).all()}
+    except Exception:  # noqa: BLE001
+        return  # already reported by check_tenants
+
+    unrouted = configured - claimed
+    uncarried = claimed - configured
+    if unrouted:
+        check(
+            FAIL,
+            "SIP numbers",
+            f"trunk carries {sorted(unrouted)} that no tenant claims — those calls "
+            "connect and then crash. Re-run scripts/sip_config.py",
+        )
+    elif uncarried:
+        check(
+            WARN,
+            "SIP numbers",
+            f"tenants claim {sorted(uncarried)} that the trunk does not carry — "
+            "those numbers will not reach the agent",
+        )
+    else:
+        check(OK, "SIP numbers", f"{len(configured)} number(s) match the tenants")
+
+    agent_name = _env("DANA_AGENT_NAME")
+    named_in_rule = ""
+    if rule_file.exists():
+        try:
+            rule = json.loads(rule_file.read_text(encoding="utf-8"))
+            agents = rule.get("room_config", {}).get("agents", [])
+            named_in_rule = agents[0].get("agent_name", "") if agents else ""
+            if not rule.get("trunk_ids") or not rule["trunk_ids"][0]:
+                check(
+                    WARN,
+                    "dispatch rule",
+                    "no trunk_id — run sip_config.py --trunk-id ST_... after creating the trunk",
+                )
+        except Exception as exc:  # noqa: BLE001
+            check(FAIL, "dispatch rule", f"{rule_file}: {exc}")
+
+    if agent_name != named_in_rule:
+        check(
+            FAIL,
+            "agent dispatch",
+            f"worker registers as {agent_name or '(automatic)'} but the rule dispatches "
+            f"{named_in_rule or '(automatic)'} — the call connects and nobody joins",
+        )
+    else:
+        check(OK, "agent dispatch", agent_name or "automatic (worker joins every room)")
+
+
 def check_storage() -> None:
     """The directories the call writes to have to exist and be writable."""
     data = _env("DANA_DATA_DIR") or "data"
@@ -210,6 +283,7 @@ def main() -> int:
     check_dependencies()
     check_env()
     check_tenants(args.tenant_dir)
+    check_sip(args.tenant_dir)
     check_storage()
     check_known_gaps()
 

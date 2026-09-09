@@ -187,20 +187,54 @@ still and needs no keys, but it cannot tell you how the agent *sounds*.
 
 ### 2. A real phone number
 
-Infrastructure, in this order:
+The number is the routing key. `_route()` looks up the tenant by the dialed
+number and refuses to guess, so the number in the tenant file, the number on the
+LiveKit trunk and the number on the Twilio trunk have to be the same string.
+Typing it three times is how they end up different, and the failure is silent:
+the call connects, LiveKit makes a room, and the agent raises `KeyError` while a
+customer listens to nothing.
 
-1. **LiveKit Cloud project** → `LIVEKIT_URL`, `LIVEKIT_API_KEY`,
-   `LIVEKIT_API_SECRET`.
-2. **Twilio Elastic SIP Trunk.** Origination URI pointed at your project's SIP
-   host. Keep the codec at `PCMU`/G.711 μ-law: the pipeline is `ulaw_8000`
-   end to end, and letting Twilio negotiate something else adds a transcode in
-   both directions for no gain in a call that is 8 kHz at the microphone
-   anyway.
-3. **A number on that trunk**, and the same number in the tenant's
-   `phone_number` field. This is the routing key — `_route()` looks up the
-   dialed number and refuses to guess.
-4. **LiveKit inbound trunk + dispatch rule**, so an inbound call creates a room
-   and dispatches your agent to it.
+So the tenant file is the source and the rest is generated:
+
+```bash
+python scripts/sip_config.py
+```
+
+It reads every tenant, writes `deploy/livekit/inbound-trunk.json` and
+`deploy/livekit/dispatch-rule.json`, and prints the `lk` commands. `preflight.py`
+then compares the two on every run and fails if they have drifted.
+
+**LiveKit.** Create a Cloud project → `LIVEKIT_URL`, `LIVEKIT_API_KEY`,
+`LIVEKIT_API_SECRET`. Note the project's SIP host, `<project-id>.sip.livekit.cloud`.
+Then, with `lk` authenticated:
+
+```bash
+lk sip inbound create deploy/livekit/inbound-trunk.json
+python scripts/sip_config.py --trunk-id ST_...   # the id that just printed
+lk sip dispatch-rule create deploy/livekit/dispatch-rule.json
+```
+
+The rule gives every call its own room. The shared-room alternative would have
+two customers hearing each other.
+
+**Twilio**, in the console — Elastic SIP Trunking, not a Programmable Voice
+webhook:
+
+1. **Elastic SIP Trunking → Trunks → new trunk.**
+2. **Origination → Origination URI:** `sip:<project-id>.sip.livekit.cloud;transport=tcp`.
+   This is the direction that matters: Twilio *originates* the call to LiveKit.
+3. **Numbers → add your number** to the trunk. It has to be the same E.164
+   string as the tenant's `phone_number`.
+4. **Voice codec: leave PCMU (G.711 μ-law) at the top.** The pipeline is
+   `ulaw_8000` end to end; letting Twilio negotiate anything else buys a
+   transcode in both directions and no fidelity, on a call that is 8 kHz at the
+   caller's microphone anyway.
+
+**Dispatch.** With `DANA_AGENT_NAME` unset the worker joins every room in the
+project — fewest moving parts, right for one agent. Set it and dispatch becomes
+explicit: the worker joins only rooms whose rule names it. Both the worker and
+`sip_config.py` read that one variable, and preflight fails if they disagree,
+because a mismatch is a call that connects and then sits in silence.
 
 Then run the worker against it:
 

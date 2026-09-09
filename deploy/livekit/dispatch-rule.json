@@ -1,0 +1,9 @@
+{
+  "name": "dana-dispatch",
+  "trunk_ids": [],
+  "rule": {
+    "dispatchRuleIndividual": {
+      "roomPrefix": "call"
+    }
+  }
+}

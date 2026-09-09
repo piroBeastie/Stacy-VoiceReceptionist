@@ -8,3 +8,6 @@ venv/
 .ruff_cache/
 data/
 *.jsonl
+
+# Generated from the tenant files by scripts/sip_config.py. Committed on
+# purpose: preflight diffs it against the tenants to catch a number drift.

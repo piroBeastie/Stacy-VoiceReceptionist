@@ -304,7 +304,21 @@ def main() -> None:
 
     load_dotenv()
     logging.basicConfig(level=os.getenv("DANA_LOG_LEVEL", "INFO"))
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
+
+    opts: dict[str, Any] = {"entrypoint_fnc": entrypoint, "prewarm_fnc": prewarm}
+
+    # Naming the worker switches LiveKit from automatic dispatch (join every
+    # room in the project) to explicit (join only rooms whose dispatch rule
+    # names you). Explicit is correct once a project runs more than one kind of
+    # agent, and is a silent failure if the rule does not match: the call
+    # connects, the room is created, and nobody joins it. `scripts/sip_config.py`
+    # reads the same variable so the rule it emits cannot disagree.
+    agent_name = os.getenv("DANA_AGENT_NAME", "").strip()
+    if agent_name:
+        opts["agent_name"] = agent_name
+        log.info("registering as %r -- only rooms dispatching this name get an agent", agent_name)
+
+    cli.run_app(WorkerOptions(**supported(WorkerOptions, opts)))
 
 
 if __name__ == "__main__":
