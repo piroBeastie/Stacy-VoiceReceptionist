@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Multi-tenant voice receptionist. Self-hosted cascade: SIP -> STT -> LLM -> TTS."
 requires-python = ">=3.11"
 dependencies = [
-    "livekit-agents[silero,turn-detector,deepgram,openai,elevenlabs,anthropic]~=1.0",
+    # Pinned to the line every surface in this repo was actually verified
+    # against, not to the widest range that happens to import. LiveKit Cloud
+    # also refuses to deploy anything declaring a floor below 1.2.
+    "livekit-agents[silero,turn-detector,deepgram,openai,elevenlabs,anthropic]~=1.8",
     # anthropic 1.x moved to httpx2 while livekit-plugins-anthropic 1.8 still
     # hands it an httpx.AsyncClient, so an unpinned install raises TypeError
     # the first time the LLM is constructed -- which is during a call.
