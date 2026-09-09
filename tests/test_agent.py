@@ -592,3 +592,60 @@ class TestRoutingOnJunk:
         assert _route(store, real).phone_number == real
         # and with the whitespace a trunk sometimes sends
         assert _route(store, f"  {real} ").phone_number == real
+
+
+class TestWhatTheCallerSaidIsVisible:
+    """A mis-transcription and a mis-understanding are different bugs.
+
+    Transcripts were stored on the runtime and written to JSONL inside the
+    worker. On hosted infrastructure that is an ephemeral container, so when a
+    caller reported "it cannot hear me" there was no way to tell whether STT
+    returned the wrong words or the model did the wrong thing with the right
+    ones -- and those have completely different fixes.
+    """
+
+    def test_a_caller_utterance_reaches_the_log(self, tenant, tmp_path, caplog) -> None:
+        rt = CallRuntime.build(
+            tenant=tenant,
+            call_id="c-heard",
+            caller_id="+12035550147",
+            calendar=CalendarStore(tmp_path / "cal"),
+            messages=MessageStore(tmp_path / "msg"),
+        )
+        with caplog.at_level("INFO", logger="dana.agent"):
+            rt.record_user("my furnace is making a noise")
+
+        assert "my furnace is making a noise" in caplog.text
+        assert "c-heard" in caplog.text
+
+    def test_blank_transcripts_do_not_fill_the_log(self, tenant, tmp_path, caplog) -> None:
+        # Deepgram emits empty finals. One line each would bury the real ones.
+        rt = CallRuntime.build(
+            tenant=tenant,
+            call_id="c-blank",
+            caller_id="",
+            calendar=CalendarStore(tmp_path / "cal"),
+            messages=MessageStore(tmp_path / "msg"),
+        )
+        with caplog.at_level("INFO", logger="dana.agent"):
+            rt.record_user("   ")
+
+        assert "c-blank" not in caplog.text
+
+
+class TestAccentIsATenantProperty:
+    def test_the_default_is_multi_accent_english(self, tenant) -> None:
+        # en-US is tuned for American speakers and transcribes other English
+        # accents noticeably worse, which a caller experiences as the agent
+        # being unable to hear them.
+        from dana.providers.registry import pipeline_for
+
+        assert tenant.stt_language == "en"
+        assert pipeline_for(tenant).stt.language == "en"
+
+    def test_a_tenant_can_override_it(self, tenant) -> None:
+        from dana.providers.registry import pipeline_for
+        from dana.tenants import Tenant
+
+        indian = Tenant.model_validate({**tenant.model_dump(), "stt_language": "en-IN"})
+        assert pipeline_for(indian).stt.language == "en-IN"

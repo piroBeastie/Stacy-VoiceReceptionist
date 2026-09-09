@@ -200,6 +200,11 @@ class CallRuntime:
         """
         if not text.strip():
             return
+        # Logged, not just stored. The transcript went to a JSONL file inside an
+        # ephemeral container, so when a caller says "it cannot hear me" there
+        # was no way to tell a mis-transcription from a mis-understanding --
+        # which are different bugs with different fixes.
+        log.info("heard %s: %r", self.call_id, text)
         self.transcript.append({"role": "user", "text": text})
         self.filler.on_user_message()
         if self.safety.scan(text) and self.outcome != "safety_override":

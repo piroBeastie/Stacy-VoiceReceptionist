@@ -169,7 +169,8 @@
   "greeting": "Thanks for calling Millbrook Heating and Cooling, this is Casey, the AI assistant — heads up, this call's recorded. What can I help you with?",
   "recording_disclosure_required": true,
   "sms_consent_required": true,
-  "voice_speed": 1.2,
+  "voice_speed": 1.0,
   "voice_stability": 0.4,
-  "voice_similarity": 0.8
+  "voice_similarity": 0.8,
+  "stt_language": "en"
 }

@@ -180,6 +180,14 @@ class Tenant(BaseModel):
     demo_mode: bool = False
     reseller: Reseller | None = None
 
+    stt_language: str = Field(
+        default="en",
+        description="Deepgram language. 'en' is multi-accent English and is the "
+        "safer default; 'en-US' is tuned for American speakers and transcribes "
+        "other English accents noticeably worse, which reads to a caller as the "
+        "agent not being able to hear them.",
+    )
+
     voice_id: str = Field(description="TTS vendor voice id")
     voice_speed: float = Field(
         default=1.0,
