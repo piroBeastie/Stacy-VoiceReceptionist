@@ -159,10 +159,28 @@ class CallRuntime:
             self._trace.annotate(**meta)
 
     def flush_turn(self) -> None:
-        """Emit the open trace, if any, and close it."""
+        """Emit the open trace, if any, and close it.
+
+        The trace also goes to the log, not only to the sink. The sink writes
+        JSONL to a path inside the worker, which on hosted infrastructure is an
+        ephemeral container nobody can read -- so on the first real call the
+        entire latency harness produced numbers that existed for the lifetime of
+        the process and then vanished. A one-line summary per turn means the
+        headline figure survives in `lk agent logs` wherever the worker runs.
+        """
         if self._trace is None:
             return
         self.sink.emit(self._trace)
+
+        response = self._trace.response_ms
+        if response is not None:
+            spans = self._trace.spans()
+            log.info(
+                "turn %s response_ms=%.0f %s",
+                self.call_id,
+                response,
+                " ".join(f"{k}={v:.0f}" for k, v in spans.items()),
+            )
         self._trace = None
 
     @property
