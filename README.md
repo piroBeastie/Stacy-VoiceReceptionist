@@ -148,6 +148,101 @@ EVAL_API_KEY=... python scripts/eval_calls.py --compare baselines/qwen.json
 
 ---
 
+## Deploying
+
+Three stages, each one usable on its own. Do not skip to the third: every
+failure that can be found on a laptop costs a real caller's patience once a
+trunk is pointed at it.
+
+Before any of them:
+
+```bash
+python scripts/preflight.py
+```
+
+It checks the SDK and plugins, every credential, that each tenant loads and
+renders and has a voice and a greeting, and that the call's write paths exist.
+`FAIL` means a call will not work. `WARN` means it will work with something you
+probably want switched off — an unconfigured webhook still answers the phone, it
+just quietly breaks the promise the agent makes at the end of every call. It
+exits non-zero on any `FAIL`, so it gates a deploy; `--strict` makes warnings
+count too.
+
+### 1. Your laptop, no phone number
+
+```bash
+python -m dana.agent.entrypoint console
+```
+
+Talks to you through your mic. No LiveKit project, no trunk, no charge except
+the STT/LLM/TTS keys. `console` and `dev` carry no SIP attributes, so there is
+no dialed number to route on — set `DANA_DEFAULT_TENANT=millbrook` in `.env` or
+this raises before the agent says a word. On a live trunk the dialed number
+always wins and the fallback is logged at warning level, because answering as
+the wrong business is worse than a stack trace.
+
+This is where to hear whether the greeting lands, whether the pauses feel
+natural, and whether a refusal reads as helpful. `scripts/dry_run.py` is faster
+still and needs no keys, but it cannot tell you how the agent *sounds*.
+
+### 2. A real phone number
+
+Infrastructure, in this order:
+
+1. **LiveKit Cloud project** → `LIVEKIT_URL`, `LIVEKIT_API_KEY`,
+   `LIVEKIT_API_SECRET`.
+2. **Twilio Elastic SIP Trunk.** Origination URI pointed at your project's SIP
+   host. Keep the codec at `PCMU`/G.711 μ-law: the pipeline is `ulaw_8000`
+   end to end, and letting Twilio negotiate something else adds a transcode in
+   both directions for no gain in a call that is 8 kHz at the microphone
+   anyway.
+3. **A number on that trunk**, and the same number in the tenant's
+   `phone_number` field. This is the routing key — `_route()` looks up the
+   dialed number and refuses to guess.
+4. **LiveKit inbound trunk + dispatch rule**, so an inbound call creates a room
+   and dispatches your agent to it.
+
+Then run the worker against it:
+
+```bash
+python -m dana.agent.entrypoint dev     # autoreload, one process
+```
+
+Call the number. The first call is the one that turns every latency figure in
+this README from a budget into a measurement — the trace lands in
+`data/traces/`, and `scripts/latency_report.py` reads it.
+
+### 3. Production
+
+```bash
+docker build -t dana .
+docker run --env-file .env -v dana-data:/app/data dana
+```
+
+The worker **dials out** to LiveKit and registers. It is not a server, listens
+on no port, and needs no inbound firewall rule — anything that runs a container
+with egress will host it. Model weights are baked in at build time so a cold
+worker isn't fetching them while somebody listens to silence, and the container
+healthcheck is `preflight.py`, so bad credentials fail the container instead of
+the call.
+
+Two things to get right:
+
+- **The volume is not optional.** Bookings, transcripts and traces are on disk.
+  Without a mount, a redeploy loses the calendar.
+- **Run one worker per tenant calendar.** `CalendarStore`'s lock is per
+  *process*, so a second worker sharing the volume can double-book a window.
+  Scaling out is blocked on moving that store behind Postgres — the interface is
+  already the seam for it. `start` mode drains gracefully, so redeploys are safe
+  at one replica; concurrency is not.
+
+Set `DANA_WEBHOOK_URL` and `DANA_WEBHOOK_SECRET` before taking traffic. The
+agent closes every call by telling the caller someone will have their details.
+Nothing on the receiving end makes that a lie the agent tells in a confident
+voice. Payloads are signed HMAC-SHA256 with a timestamp, and retried on a
+backoff ladder; calls are archived locally first, so a webhook outage costs you
+delivery, not the record.
+
 ## Build phases and their gates
 
 Do not pass a gate on impressions. Pass it on `scripts/latency_report.py`.
@@ -309,6 +404,10 @@ doesn't accept, logging what it dropped. A version skew now shows up in the
 first line of the worker log rather than as a `TypeError` while a caller is on
 the line. The same guard wraps `AgentSession`.
 
+`scripts/preflight.py` covers the rest of the checklist -- credentials, tenant
+loading, prompt rendering, write paths -- and exits non-zero if a call would
+fail. Run it first; it is cheaper than a call.
+
 That is a mitigation, not a substitute. **No code in this repo has ever executed
 against the SDK** — there is no venv and `livekit` is not installed. The node
 method names and their yielded types in `agent/nodes.py` are the highest-risk
@@ -320,7 +419,7 @@ surface remaining.
 python -m pytest -q
 ```
 
-254 tests, none of which need a vendor package. They are not style checks — each
+259 tests, none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

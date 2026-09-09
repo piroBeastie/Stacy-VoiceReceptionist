@@ -88,6 +88,39 @@ def _stores(proc_userdata: dict[str, Any]) -> tuple[TenantStore, CalendarStore, 
     return tenants, calendar, messages
 
 
+def _route(tenants: TenantStore, dialed: str) -> Any:
+    """Pick the tenant for an inbound call.
+
+    Normally the dialed number decides, and an unclaimed number is a loud
+    failure -- a caller reaching the wrong business is the worst possible place
+    to discover a routing mistake.
+
+    `console` and `dev` modes have no SIP attributes at all, so the dialed
+    number is empty and there is nothing to route on. `DANA_DEFAULT_TENANT`
+    covers that case, because otherwise the fastest way to hear the agent --
+    talking to it through your laptop mic -- raises KeyError before it says a
+    word. It logs at warning level every time it is used: on a real trunk this
+    firing means the SIP attribute name has changed, and silently answering as
+    the wrong business would be much worse than a stack trace.
+    """
+    if dialed:
+        return tenants.for_number(dialed)
+
+    fallback = os.getenv("DANA_DEFAULT_TENANT")
+    if not fallback:
+        raise KeyError(
+            "no dialed number on the participant and DANA_DEFAULT_TENANT is unset. "
+            "On a live trunk, check the SIP attribute name; for local testing, set "
+            "DANA_DEFAULT_TENANT to a tenant_id."
+        )
+    log.warning(
+        "no dialed number -- falling back to tenant %r. Expected in console/dev "
+        "mode; on a live trunk this means SIP attributes are missing.",
+        fallback,
+    )
+    return tenants.get(fallback)
+
+
 def _webhook() -> WebhookSender | None:
     """The post-call consumer, if one is configured."""
     url, secret = os.getenv("DANA_WEBHOOK_URL"), os.getenv("DANA_WEBHOOK_SECRET")
@@ -112,7 +145,7 @@ async def entrypoint(ctx: Any) -> None:
     tenants, calendar, messages = _stores(userdata)
 
     runtime = CallRuntime.build(
-        tenant=tenants.for_number(attrs.get(SIP_DIALED_ATTR, "")),
+        tenant=_route(tenants, attrs.get(SIP_DIALED_ATTR, "")),
         call_id=ctx.room.name,
         caller_id=attrs.get(SIP_CALLER_ATTR, ""),
         sink=JsonlSink(os.getenv("DANA_TRACE_DIR", "data/traces")),

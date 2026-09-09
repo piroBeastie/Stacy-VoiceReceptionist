@@ -345,6 +345,45 @@ class TestDeskOperations:
         )
 
 
+class TestRouting:
+    """Which business a call is answered as."""
+
+    def test_the_dialed_number_decides(self, store, tenant: Tenant) -> None:
+        from dana.agent.entrypoint import _route
+
+        assert _route(store, tenant.phone_number).tenant_id == "millbrook"
+
+    def test_an_unclaimed_number_is_a_loud_failure(self, store) -> None:
+        # A caller reaching the wrong business is the worst possible place to
+        # discover a routing mistake.
+        from dana.agent.entrypoint import _route
+
+        with pytest.raises(KeyError):
+            _route(store, "+15550000000")
+
+    def test_no_dialed_number_and_no_fallback_raises(self, store, monkeypatch) -> None:
+        from dana.agent.entrypoint import _route
+
+        monkeypatch.delenv("DANA_DEFAULT_TENANT", raising=False)
+        with pytest.raises(KeyError, match="DANA_DEFAULT_TENANT"):
+            _route(store, "")
+
+    def test_the_fallback_makes_console_mode_work(self, store, monkeypatch) -> None:
+        # Without this, the fastest way to hear the agent -- talking to it
+        # through a laptop mic -- raises before it says a word.
+        from dana.agent.entrypoint import _route
+
+        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        assert _route(store, "").tenant_id == "millbrook"
+
+    def test_the_fallback_never_overrides_a_real_number(self, store, monkeypatch) -> None:
+        from dana.agent.entrypoint import _route
+
+        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        with pytest.raises(KeyError):
+            _route(store, "+15550000000")
+
+
 class TestSafetyOverrideAtRuntime:
     """The interceptor's effect on the call, not its detection (see test_safety)."""
 
