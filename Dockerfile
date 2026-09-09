@@ -34,17 +34,25 @@ RUN pip install --no-cache-dir -e .
 COPY src/ src/
 COPY scripts/ scripts/
 
-# Download the VAD and turn-detector weights into the image. `download-files` is
-# the SDK's own hook for exactly this; if it moves, the build fails loudly here
-# rather than the first caller waiting through a model fetch.
-RUN python -m dana.agent.entrypoint download-files
-
 # A non-root user, because this process handles call audio and writes
 # transcripts. /app/data is where both land.
 RUN useradd --create-home --uid 10001 dana \
-    && mkdir -p /app/data \
+    && mkdir -p /app/data /app/.cache \
     && chown -R dana:dana /app
+
+# The model cache has to live somewhere the runtime user can read, and the
+# download has to happen AS that user. Fetching as root put the weights under
+# /root/.cache while the worker ran as `dana` and looked in /home/dana: the
+# files were in the image and still unreachable, and a deployed worker died with
+# `Could not find file "model_q8.onnx"`. Endpointing then degrades to raw VAD,
+# which is the difference between waiting for someone to finish a sentence and
+# cutting them off in the middle of their address.
+ENV HF_HOME=/app/.cache/huggingface
 USER dana
+
+# `download-files` is the SDK's own hook for this; if it moves, the build fails
+# loudly here rather than the first caller waiting through a model fetch.
+RUN python -m dana.agent.entrypoint download-files
 
 ENV DANA_TENANT_DIR=/app/src/dana/tenants/data \
     DANA_DATA_DIR=/app/data \

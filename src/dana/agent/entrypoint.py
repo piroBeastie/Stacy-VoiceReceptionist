@@ -137,6 +137,29 @@ def _route(tenants: TenantStore, dialed: Any) -> Any:
     return tenants.get(fallback)
 
 
+def _turn_detector(cfg: PipelineConfig) -> Any | None:
+    """The semantic end-of-utterance model, or None to fall back to raw VAD.
+
+    Never fatal. Its weights are baked in at image build time and have been
+    unreachable at runtime once already -- fetched as root, read as a non-root
+    user -- and a missing model must not take the call down with it.
+
+    Losing it is a real degradation, so it says so loudly: VAD alone endpoints
+    on silence, which means the agent starts talking during the pause in the
+    middle of "fourteen... Elm Street". Worth a warning on every call until it
+    is fixed.
+    """
+    try:
+        return build_turn_detector(cfg.turn)
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "semantic endpointing unavailable -- falling back to raw VAD, which "
+            "will interrupt callers mid-sentence. Check that the model weights "
+            "are readable by the user the worker runs as."
+        )
+        return None
+
+
 def _webhook() -> WebhookSender | None:
     """The post-call consumer, if one is configured."""
     url, secret = os.getenv("DANA_WEBHOOK_URL"), os.getenv("DANA_WEBHOOK_SECRET")
@@ -179,7 +202,7 @@ async def entrypoint(ctx: Any) -> None:
         "stt": build_stt(cfg.stt),
         "llm": build_llm(cfg.llm),
         "tts": build_tts(cfg.tts),
-        "turn_detection": userdata.get("turn_detector") or build_turn_detector(cfg.turn),
+        "turn_detection": userdata.get("turn_detector") or _turn_detector(cfg),
         "min_endpointing_delay": cfg.turn.min_endpointing_delay_s,
         "max_endpointing_delay": cfg.turn.max_endpointing_delay_s,
         "preemptive_generation": cfg.turn.preemptive_generation,
