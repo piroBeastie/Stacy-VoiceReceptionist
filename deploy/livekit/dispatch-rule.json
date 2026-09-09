@@ -1,8 +1,6 @@
 {
   "name": "dana-dispatch",
-  "trunk_ids": [
-    "ST_QdmtGTupQFfv"
-  ],
+  "trunk_ids": [],
   "rule": {
     "dispatchRuleIndividual": {
       "roomPrefix": "call"

@@ -207,13 +207,25 @@ then compares the two on every run and fails if they have drifted.
 
 **LiveKit.** Create a Cloud project → `LIVEKIT_URL`, `LIVEKIT_API_KEY`,
 `LIVEKIT_API_SECRET`. Note the project's SIP host, `<project-id>.sip.livekit.cloud`.
-Then, with `lk` authenticated:
+Then push the trunk and rule straight from the tenant files:
 
 ```bash
-lk sip inbound create deploy/livekit/inbound-trunk.json
-python scripts/sip_config.py --trunk-id ST_...   # the id that just printed
-lk sip dispatch-rule create deploy/livekit/dispatch-rule.json
+python scripts/sip_config.py --apply
 ```
+
+It creates what is missing, updates a trunk whose numbers have drifted, and
+warns if a dispatch rule names an agent the worker does not register as — the
+failure where the call connects, the room is created, and nobody joins. Run it
+again any time; it reports what already matched and changes nothing else.
+
+To move a tenant to a different number, change it in one place:
+
+```bash
+python scripts/sip_config.py --set-number millbrook=+12138451295 --apply
+```
+
+Without `--apply` it writes `deploy/livekit/*.json` and prints the equivalent
+`lk` commands instead.
 
 The rule gives every call its own room. The shared-room alternative would have
 two customers hearing each other.
