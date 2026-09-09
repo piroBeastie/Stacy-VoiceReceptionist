@@ -83,10 +83,21 @@ class STTConfig:
 class LLMConfig:
     """The conversational model.
 
-    Any OpenAI-compatible endpoint. Host matters more than model here: the same
-    weights on Groq or Cerebras versus a general cloud is the difference between
-    ~150ms and ~500ms to first token, and first-token time is the only LLM
-    number a caller can hear.
+    Two things are being chosen here and they are easy to confuse. The *host*
+    sets time to first token -- the same open weights on Groq or Cerebras versus
+    a general cloud is roughly 150ms against 500ms, and first-token time is the
+    only LLM number a caller can hear. The *model* sets whether the answer is
+    right.
+
+    The default is a frontier model rather than the fastest host, because on
+    this workload a wrong answer is not a slower call, it is a technician sent
+    to the wrong address or a price quoted that the business will not honour.
+    The half-second is bought back elsewhere: preemptive generation starts the
+    turn on the interim transcript, the prompt prefix is cached, and a soft
+    filler covers the gap before a tool call. None of those recover a mistake.
+
+    `scripts/eval_calls.py` is what settles this rather than argument -- swap
+    the model, take fifty calls, compare the eight criteria.
 
     `temperature` stays at 0.0. The prompt forbids repeating a sentence within a
     call, and the usual fix -- raising temperature -- also loosens grip on the
@@ -94,12 +105,33 @@ class LLMConfig:
     :attr:`frequency_penalty` buys variety without touching that grip.
     """
 
-    base_url: str = "https://api.groq.com/openai/v1"
-    model: str = "qwen-3-235b-a22b-instruct"
+    vendor: Literal["openai", "anthropic"] = "anthropic"
+    """Which client to build. "openai" covers every OpenAI-compatible host --
+    OpenAI itself, Groq, Cerebras, Fireworks, vLLM."""
+
+    base_url: str = ""
+    """Empty means the vendor's own default endpoint. Only meaningful for
+    "openai", where it is what selects the host."""
+
+    model: str = "claude-sonnet-5"
+    api_key_env: str = "LLM_API_KEY"
+    """*Which environment variable* holds the key, not the key. The primary and
+    the fallback are usually different vendors -- that is the whole point of the
+    cascade -- and they cannot share one credential."""
+
     temperature: float = 0.0
     frequency_penalty: float = 0.3
     """Discourages verbatim repetition. Preferred over temperature because it
-    penalises reused tokens rather than flattening the whole distribution."""
+    penalises reused tokens rather than flattening the whole distribution.
+    OpenAI-compatible hosts only: the Anthropic API has no such parameter, so on
+    that vendor repetition is held down by the prompt alone."""
+
+    caching: bool = True
+    """Ask the vendor to cache the prompt prefix. The system prompt is ~5,700
+    tokens and 99.2% of it is byte-identical between turns, so this is the
+    difference between paying for the tenant's whole knowledge base on every
+    turn and paying for it once a call. OpenAI-compatible hosts do it
+    automatically and ignore this; Anthropic requires asking."""
 
     max_tokens: int | None = None
     """None means unbounded, matching main's `max_tokens: -1`."""
@@ -110,7 +142,10 @@ class LLMConfig:
     2-15."""
 
     fallback: "LLMConfig | None" = None
-    """Second model tried on timeout or error. Set one before taking real traffic."""
+    """Second model tried on timeout or error. Set one before taking real
+    traffic. This is where a fast open-weight model earns its place: when the
+    smart primary has timed out, the comparison is no longer "smart versus
+    fast", it is "fast versus dead air"."""
 
 
 @dataclass(frozen=True)

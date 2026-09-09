@@ -84,14 +84,36 @@ def check_env() -> None:
     else:
         check(OK, "TTS key", "elevenlabs" if _env("ELEVENLABS_API_KEY") else "cartesia")
 
+    vendor = _env("LLM_VENDOR") or "anthropic"
+    check(OK, "LLM", f"{vendor}/{_env('LLM_MODEL') or 'claude-sonnet-5'}")
+    if vendor == "anthropic" and _env("LLM_CACHING") in {"0", "false", "no"}:
+        check(
+            WARN,
+            "LLM_CACHING",
+            "off — Anthropic does not cache unless asked, so every turn pays for "
+            "the full ~5,700-token tenant prompt in latency and money",
+        )
+
     if not _env("LLM_FALLBACK_MODEL"):
         check(
             WARN,
             "LLM_FALLBACK_MODEL",
             "no cascade target — a rate-limited primary is a 4s hole in the call",
         )
+    elif not _env("LLM_FALLBACK_API_KEY"):
+        check(
+            FAIL,
+            "LLM_FALLBACK_API_KEY",
+            f"{_env('LLM_FALLBACK_MODEL')} is configured but has no key. The fallback "
+            "is a different account from the primary and cannot borrow its credential — "
+            "it would fail authentication at the one moment it is needed",
+        )
     else:
-        check(OK, "LLM_FALLBACK_MODEL", _env("LLM_FALLBACK_MODEL"))
+        check(
+            OK,
+            "LLM_FALLBACK_MODEL",
+            f"{_env('LLM_FALLBACK_VENDOR') or 'openai'}/{_env('LLM_FALLBACK_MODEL')}",
+        )
 
     if not (_env("DANA_WEBHOOK_URL") and _env("DANA_WEBHOOK_SECRET")):
         check(

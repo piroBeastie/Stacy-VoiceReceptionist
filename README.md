@@ -111,6 +111,7 @@ package installed, which is why the whole policy layer is testable at all.
 ```bash
 python -m venv .venv && .venv/Scripts/activate
 pip install -e ".[dev]"
+python scripts/preflight.py   # tells you what is still missing
 cp .env.example .env   # then fill it in
 ```
 
@@ -392,7 +393,32 @@ suggestion to a model and these are not suggestions:
 
 ## Choosing a model
 
-Two tables decide it, and neither alone is enough. `scripts/latency_report.py`
+The default is **Claude Sonnet 5**, with a fast open-weight model on Groq behind
+it as the cascade fallback.
+
+Two decisions get confused here. The *host* sets time to first token — the same
+open weights on Groq or Cerebras versus a general cloud is roughly 150ms against
+500ms, and first-token time is the only LLM number a caller can hear. The
+*model* sets whether the answer is right. Picking the fastest host and taking
+whatever open weights it serves optimises the number you can hear at the expense
+of the one you can't.
+
+On this workload that trade is the wrong way round. A wrong answer is not a
+slower call; it is a technician sent to the wrong address, a price quoted the
+business won't honour, or an emergency booked as a Tuesday appointment. The half
+second is bought back elsewhere — preemptive generation starts the turn on the
+interim transcript, the prompt prefix is cached, a filler covers the gap before
+a tool call — and none of those recover a mistake.
+
+The fallback is where a fast open-weight model earns its place. Once the primary
+has burned `LLM_TIMEOUT_S`, the comparison is no longer "smart versus fast", it
+is "fast versus dead air". Primary and fallback are different vendors on
+different accounts, so each names its own key variable (`LLM_API_KEY`,
+`LLM_FALLBACK_API_KEY`); they used to share one, which meant the fallback was
+handed the primary's credential and would have failed authentication at the one
+moment it was needed.
+
+Two tables decide the rest, and neither alone is enough. `scripts/latency_report.py`
 says how fast a stack is; `scripts/eval_calls.py` says whether it still follows
 the rules. Swapping the LLM on one of them is how a faster model quietly stops
 honouring the two-sentence ceiling and nobody finds out for three weeks.
@@ -431,21 +457,39 @@ with the same model is self-marking, and the judge doesn't need to be fast.
 
 ## Verify before the first live call
 
-`agent/entrypoint.py` and `agent/nodes.py` are the only version-sensitive files
-left. `providers/registry.py` used to be a third, and no longer is:
 `registry.supported()` inspects each plugin constructor and drops arguments it
-doesn't accept, logging what it dropped. A version skew now shows up in the
-first line of the worker log rather than as a `TypeError` while a caller is on
-the line. The same guard wraps `AgentSession`.
+doesn't accept, logging what it dropped, so a version skew shows up in the first
+line of the worker log rather than as a `TypeError` while a caller is on the
+line. The same guard wraps `AgentSession` and `WorkerOptions`.
+
+**The pipeline has now been constructed against the real SDK** (livekit-agents
+1.8.0) and builds with nothing dropped. Doing that for the first time found four
+things the guard was hiding or could not see:
+
+- `openai.LLM` has no `frequency_penalty` parameter. It was being dropped on
+  every call, so the repetition control the config documents as the reason
+  temperature can stay at 0 had never once been applied. It goes through
+  `extra_body` now, which is the plugin's pass-through to the host.
+- The ElevenLabs plugin's own key lookup reads `ELEVEN_API_KEY`, a name used
+  nowhere in this repo. Setting the documented `ELEVENLABS_API_KEY` and getting
+  "API key is required" is a baffling five minutes. Every vendor key is passed
+  explicitly now rather than left to each plugin's env conventions.
+- `anthropic` 1.x moved to `httpx2` while `livekit-plugins-anthropic` 1.8 still
+  hands it an `httpx.AsyncClient`. An unpinned install raises `TypeError` the
+  first time the LLM is constructed — during a call. Pinned to `<1.0`.
+- `zoneinfo` has no bundled database, so a clean venv or slim container has no
+  `America/New_York`. Every appointment time and hours check goes through it.
+  `tzdata` is an explicit dependency now.
+
+The first three were invisible precisely because `supported()` degrades quietly;
+that is the right trade for a live call and the wrong one for a first install,
+which is why this had to be run once. `agent/nodes.py`'s node method names and
+yielded types remain the highest-risk surface, because they need a call rather
+than a constructor to exercise.
 
 `scripts/preflight.py` covers the rest of the checklist -- credentials, tenant
 loading, prompt rendering, write paths -- and exits non-zero if a call would
 fail. Run it first; it is cheaper than a call.
-
-That is a mitigation, not a substitute. **No code in this repo has ever executed
-against the SDK** — there is no venv and `livekit` is not installed. The node
-method names and their yielded types in `agent/nodes.py` are the highest-risk
-surface remaining.
 
 ## Tests
 
@@ -453,7 +497,7 @@ surface remaining.
 python -m pytest -q
 ```
 
-259 tests, none of which need a vendor package. They are not style checks — each
+265 tests, none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

@@ -248,3 +248,70 @@ class TestTenantRouting:
     def test_phone_numbers_must_be_e164(self, millbrook) -> None:
         with pytest.raises(ValueError, match="E.164"):
             millbrook.model_validate({**millbrook.model_dump(), "phone_number": "860-398-9358"})
+
+
+class TestTheCascadeIsTwoAccounts:
+    """The primary and the fallback are different vendors on different bills.
+
+    `_one_llm` read a fixed `LLM_API_KEY` for both, so "smart primary, fast
+    fallback" was not expressible: the fallback was handed the primary's
+    credential and would have failed authentication at the exact moment it was
+    needed -- four seconds into a timeout, with a caller waiting.
+    """
+
+    def test_the_fallback_carries_its_own_key_variable(
+        self, millbrook: Tenant, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("LLM_FALLBACK_MODEL", "llama-3.3-70b-versatile")
+        monkeypatch.setenv("LLM_FALLBACK_BASE_URL", "https://api.groq.com/openai/v1")
+        cfg = pipeline_for(millbrook)
+
+        assert cfg.llm.fallback is not None
+        assert cfg.llm.api_key_env != cfg.llm.fallback.api_key_env
+
+    def test_the_fallback_is_a_different_vendor_from_the_primary(
+        self, millbrook: Tenant, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("LLM_FALLBACK_MODEL", "llama-3.3-70b-versatile")
+        cfg = pipeline_for(millbrook)
+
+        assert cfg.llm.vendor == "anthropic"
+        assert cfg.llm.fallback.vendor == "openai"
+
+    def test_no_fallback_configured_is_still_no_fallback(
+        self, millbrook: Tenant, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("LLM_FALLBACK_MODEL", raising=False)
+        assert pipeline_for(millbrook).llm.fallback is None
+
+    def test_a_missing_key_names_the_variable_it_wanted(self, monkeypatch) -> None:
+        # The failure a person has to act on is "which variable", not "401".
+        from dana.providers.base import LLMConfig
+        from dana.providers.registry import _one_llm
+
+        monkeypatch.delenv("LLM_FALLBACK_API_KEY", raising=False)
+        cfg = LLMConfig(vendor="openai", model="whatever", api_key_env="LLM_FALLBACK_API_KEY")
+        with pytest.raises(KeyError, match="LLM_FALLBACK_API_KEY"):
+            _one_llm(cfg)
+
+    def test_a_blank_key_is_a_missing_key(self, monkeypatch) -> None:
+        # An empty value in a .env file is the usual way this goes wrong, and it
+        # is not the same failure as an absent variable unless we say so.
+        from dana.providers.base import LLMConfig
+        from dana.providers.registry import _one_llm
+
+        monkeypatch.setenv("LLM_FALLBACK_API_KEY", "   ")
+        cfg = LLMConfig(vendor="openai", model="whatever", api_key_env="LLM_FALLBACK_API_KEY")
+        with pytest.raises(KeyError, match="LLM_FALLBACK_API_KEY"):
+            _one_llm(cfg)
+
+    def test_prompt_caching_is_on_unless_switched_off(
+        self, millbrook: Tenant, monkeypatch
+    ) -> None:
+        # ~5,700 tokens of tenant knowledge, 99.2% byte-identical between turns.
+        # Anthropic does not cache unless asked, so the default has to ask.
+        monkeypatch.delenv("LLM_CACHING", raising=False)
+        assert pipeline_for(millbrook).llm.caching is True
+
+        monkeypatch.setenv("LLM_CACHING", "0")
+        assert pipeline_for(millbrook).llm.caching is False

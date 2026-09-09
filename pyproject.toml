@@ -4,10 +4,20 @@ version = "0.1.0"
 description = "Multi-tenant voice receptionist. Self-hosted cascade: SIP -> STT -> LLM -> TTS."
 requires-python = ">=3.11"
 dependencies = [
-    "livekit-agents[silero,turn-detector,deepgram,openai,elevenlabs]~=1.0",
+    "livekit-agents[silero,turn-detector,deepgram,openai,elevenlabs,anthropic]~=1.0",
+    # anthropic 1.x moved to httpx2 while livekit-plugins-anthropic 1.8 still
+    # hands it an httpx.AsyncClient, so an unpinned install raises TypeError
+    # the first time the LLM is constructed -- which is during a call.
+    "anthropic<1.0",
     "jinja2>=3.1",
     "pydantic>=2.7",
     "python-dotenv>=1.0",
+    # zoneinfo has no bundled database. Every appointment time, every "are we
+    # open right now" check and every spoken date goes through
+    # ZoneInfo(tenant.timezone), so without this the worker raises on the first
+    # call on Windows and on any slim container. It passed locally only because
+    # the ambient interpreter happened to have it.
+    "tzdata",
     # Post-call webhook transport. Arrives transitively via livekit-agents
     # today; pinned here because delivery must not depend on that staying true.
     "aiohttp>=3.9",
