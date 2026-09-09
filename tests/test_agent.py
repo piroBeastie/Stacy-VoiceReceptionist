@@ -547,3 +547,48 @@ class TestPostCallPayload:
             problem="water heater started leaking",
         )
         assert runtime.post_call_payload()["outcome"] == "dispatched"
+
+
+class TestRoutingOnJunk:
+    """A dialed number that is not a number.
+
+    Emptiness is not the only way for the dialed attribute to be absent.
+    `console` mode hands the entrypoint a MagicMock participant, so
+    `attributes.get(...)` returned a mock -- which is truthy, walked straight
+    past an `if dialed:` guard, and reached the tenant lookup as if it were a
+    phone number. The agent crashed before saying a word, on the one path that
+    exists to be tried first.
+    """
+
+    def test_a_mock_attribute_is_not_a_dialed_number(self, store, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from dana.agent.entrypoint import _route
+
+        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        assert _route(store, MagicMock()).tenant_id == "millbrook"
+
+    @pytest.mark.parametrize("junk", [None, 0, [], {}, "not-a-number", "+1 (213) x"])
+    def test_anything_unphonelike_falls_back(self, store, monkeypatch, junk) -> None:
+        from dana.agent.entrypoint import _route
+
+        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        assert _route(store, junk).tenant_id == "millbrook"
+
+    def test_junk_without_a_fallback_still_raises_helpfully(self, store, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from dana.agent.entrypoint import _route
+
+        monkeypatch.delenv("DANA_DEFAULT_TENANT", raising=False)
+        with pytest.raises(KeyError, match="DANA_DEFAULT_TENANT"):
+            _route(store, MagicMock())
+
+    def test_a_real_number_still_wins(self, store, tenant: Tenant, monkeypatch) -> None:
+        from dana.agent.entrypoint import _route
+
+        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        real = tenant.phone_number
+        assert _route(store, real).phone_number == real
+        # and with the whitespace a trunk sometimes sends
+        assert _route(store, f"  {real} ").phone_number == real

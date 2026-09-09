@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Any
 
 from dana.agent.nodes import build_agent
@@ -89,7 +90,20 @@ def _stores(proc_userdata: dict[str, Any]) -> tuple[TenantStore, CalendarStore, 
     return tenants, calendar, messages
 
 
-def _route(tenants: TenantStore, dialed: str) -> Any:
+def _looks_dialed(value: Any) -> bool:
+    """Is this actually a number somebody dialled?
+
+    Emptiness is not the only way for it to be absent. `console` mode hands the
+    entrypoint a MagicMock participant, so `attributes.get(...)` returns a mock
+    -- which is truthy, sailed straight past an `if dialed:` guard, and was
+    passed to the tenant lookup as if it were a phone number. Anything that is
+    not a string shaped like E.164 is treated as "no dialed number", which is
+    what the fallback exists for.
+    """
+    return isinstance(value, str) and bool(re.fullmatch(r"\+?[0-9]{7,15}", value.strip()))
+
+
+def _route(tenants: TenantStore, dialed: Any) -> Any:
     """Pick the tenant for an inbound call.
 
     Normally the dialed number decides, and an unclaimed number is a loud
@@ -104,8 +118,8 @@ def _route(tenants: TenantStore, dialed: str) -> Any:
     firing means the SIP attribute name has changed, and silently answering as
     the wrong business would be much worse than a stack trace.
     """
-    if dialed:
-        return tenants.for_number(dialed)
+    if _looks_dialed(dialed):
+        return tenants.for_number(dialed.strip())
 
     fallback = os.getenv("DANA_DEFAULT_TENANT")
     if not fallback:
@@ -140,7 +154,11 @@ async def entrypoint(ctx: Any) -> None:
 
     await ctx.connect()
     participant = await ctx.wait_for_participant()
-    attrs = getattr(participant, "attributes", {}) or {}
+    # Coerced to a real mapping: in console mode `participant` is a MagicMock,
+    # so this attribute is a mock whose .get() returns another mock rather than
+    # the default. Anything that is not already a dict is no attributes at all.
+    raw_attrs = getattr(participant, "attributes", None)
+    attrs: dict[str, Any] = raw_attrs if isinstance(raw_attrs, dict) else {}
 
     userdata = getattr(ctx.proc, "userdata", {}) if hasattr(ctx, "proc") else {}
     tenants, calendar, messages = _stores(userdata)

@@ -38,10 +38,20 @@ Silero detector Deepgram   Qwen3/Groq   Flash v2.5  desk/
        (EOU)    Nova-3                  or Cartesia
 ```
 
-Audio stays `ulaw_8000` end to end. Every resample costs 20–50ms and some
-quality, and a transcode that sneaks in makes every measurement below a lie.
-That pin is only real if each vendor is *told* the format — the plugins all
-default to 16k PCM, so `registry.py` passes it explicitly on both legs.
+Audio stays at **8kHz** end to end. Every resample costs 20–50ms and some
+quality, and one that sneaks in makes every measurement below a lie. The pin is
+only real if each vendor is *told* the rate, so `registry.py` passes it
+explicitly on both legs rather than letting it default.
+
+It is `pcm_8000` on the TTS leg, not `ulaw_8000`, and the correction is worth
+recording. The ElevenLabs *API* will return µ-law and this claimed µ-law for
+that reason; the *plugin* cannot ask for it — its accepted encodings are mp3,
+opus and pcm only, and the µ-law value raised `ValueError: Unsupported encoding`
+on the first turn that tried to speak. `pcm_8000` matches the telephony rate
+exactly, so nothing is resampled, which was the actual point. LiveKit companders
+it to µ-law for the SIP leg, which is not a resample. The plugin's own default,
+`mp3_22050_32`, would have been an MP3 decode *plus* a 22050→8000 resample on
+every utterance.
 
 ### Where the milliseconds are
 
@@ -297,7 +307,7 @@ Do not pass a gate on impressions. Pass it on `scripts/latency_report.py`.
 | # | Phase | Gate | State |
 |---|---|---|---|
 | 0 | Measurement harness | Per-stage table for any call | **done** |
-| 1 | SIP echo bones | Round-trip measured, µ-law path transcode-free | next |
+| 1 | SIP echo bones | Round-trip measured, 8kHz path resample-free | next |
 | 2 | Full cascade, naive settings | Baseline p50 recorded | |
 | 3 | Prompt port | **Safety-override test green** before anything else | ported + KB, untested live |
 | 4 | Latency work | p50 ≤ 700ms, p95 ≤ 1.1s over ≥50 real calls | |

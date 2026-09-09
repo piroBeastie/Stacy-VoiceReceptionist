@@ -23,6 +23,7 @@ import os
 from typing import Any, Callable
 
 from dana.providers.base import (
+    TELEPHONY_FORMAT,
     FillerConfig,
     LLMConfig,
     PipelineConfig,
@@ -319,8 +320,9 @@ def build_llm(cfg: LLMConfig) -> Any:
 def build_tts(cfg: TTSConfig) -> Any:
     """Instantiate the TTS plugin named by `cfg.vendor`.
 
-    Both branches request mu-law 8k explicitly. Do not let this default: a PCM
-    stream converted locally is a hidden transcode and it will not announce
+    Both branches pin the sample rate to 8k explicitly. Do not let this default:
+    the ElevenLabs plugin defaults to `mp3_22050_32`, which is an MP3 decode and
+    a 22050-to-8000 resample on every utterance, and it will not announce
     itself.
 
     `optimize_streaming_latency` is deliberately absent. It is a documented
@@ -339,7 +341,7 @@ def build_tts(cfg: TTSConfig) -> Any:
             # required" is a genuinely baffling five minutes; pass it explicitly.
             "api_key": _key("ELEVENLABS_API_KEY"),
             "voice_id": cfg.voice_id,
-            "encoding": "ulaw_8000",
+            "encoding": TELEPHONY_FORMAT,
             "chunk_length_schedule": list(schedule),
             "voice_settings": elevenlabs.VoiceSettings(
                 stability=cfg.stability,

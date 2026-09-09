@@ -8,8 +8,8 @@ Concretely, this is what makes the answer to "does any client forbid
 third-party AI vendors?" a one-line change: point ``TTSConfig.vendor`` at
 ``cartesia`` instead of ``elevenlabs`` and nothing else in the repo moves.
 
-Audio format is pinned to mu-law 8kHz end to end and is deliberately not a
-per-vendor option. Twilio speaks mu-law; every resample on the path costs
+Audio is pinned to 8kHz end to end and is deliberately not a per-vendor option.
+Twilio speaks 8kHz mu-law; every resample on the path costs
 20-50ms and some quality, and a transcode that sneaks in makes every latency
 measurement downstream a lie. That pin is only real if each vendor is *told*
 the format -- the plugins all default to 16k PCM, so the fields below are
@@ -21,9 +21,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-AudioFormat = Literal["ulaw_8000", "pcm_16000"]
+AudioFormat = Literal["ulaw_8000", "pcm_8000", "pcm_16000"]
 
-TELEPHONY_FORMAT: AudioFormat = "ulaw_8000"
+TELEPHONY_FORMAT: AudioFormat = "pcm_8000"
+"""8kHz linear PCM, not mu-law, and the difference is worth stating.
+
+The ElevenLabs API will return `ulaw_8000`, and this was set to it on the
+strength of that. The livekit plugin cannot ask for it: its accepted encodings
+are mp3, opus and pcm only, so the value raised `ValueError: Unsupported
+encoding` on the first turn that tried to speak.
+
+`pcm_8000` is the honest best available. It matches the telephony sample rate
+exactly, so nothing is resampled -- which was the actual point, resampling being
+what costs quality. LiveKit converts PCM to mu-law for the SIP leg, and that
+conversion is a lossless-at-8kHz companding step, not a resample. The plugin's
+own default, `mp3_22050_32`, would be worse on both counts: an MP3 decode plus a
+22050 to 8000 resample on every utterance."""
 """The only format that touches the wire. See module docstring."""
 
 TELEPHONY_SAMPLE_RATE = 8000
