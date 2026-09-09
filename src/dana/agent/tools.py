@@ -294,6 +294,25 @@ class DeskOperations:
         return f"Message taken{who} — marked {msg.priority}."
 
 
+def _said(value: str | None) -> str:
+    """Normalise an unsupplied argument to the blank the desk layer expects.
+
+    Optional arguments are declared `str | None` rather than `str = ""` because
+    of how the schema reaches the model. livekit-agents renders every parameter
+    into `required`, whatever its Python default, and makes the unsupplied case
+    expressible by widening the type to `["string", "null"]`. So the model is
+    obliged to send all ten keys on every call and needs a legal way to say "the
+    caller did not tell me this".
+
+    With `str = ""` there was no such value. Asked for a phone number nobody had
+    given, the model filled the slot with whatever came to hand -- in testing,
+    fragments of its own tool-call scaffolding -- and that went into the booking
+    as the caller's callback number. Null is the honest answer, and this turns it
+    back into the blank that `BookingSlots.update` already treats as "no change".
+    """
+    return (value or "").strip()
+
+
 def build_function_tools(ops: DeskOperations) -> list[Any]:
     """Wrap :class:`DeskOperations` as livekit function tools.
 
@@ -332,56 +351,56 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
         return timed("check_availability", ops.check_availability)(day)
 
     @function_tool
-    async def lookup_customer(phone: str = "") -> str:
+    async def lookup_customer(phone: str | None = None) -> str:
         """Look up whether this caller has been a customer before.
 
         Args:
-            phone: Their number. Leave empty to use the number they called from.
+            phone: Their number, or null to use the number they called from.
         """
-        return timed("lookup_customer", ops.lookup_customer)(phone)
+        return timed("lookup_customer", ops.lookup_customer)(_said(phone))
 
     @function_tool
     async def record_details(
-        customer_name: str = "",
-        phone: str = "",
-        street_address: str = "",
-        town: str = "",
-        problem: str = "",
-        system_type: str = "",
-        fuel: str = "",
-        day: str = "",
-        window: str = "",
+        customer_name: str | None = None,
+        phone: str | None = None,
+        street_address: str | None = None,
+        town: str | None = None,
+        problem: str | None = None,
+        system_type: str | None = None,
+        fuel: str | None = None,
+        day: str | None = None,
+        window: str | None = None,
         sms_consent: bool | None = None,
     ) -> str:
         """Write down everything the caller just told you, however many things it was.
 
         Call this whenever the caller gives you any detail, including several at
-        once. Pass only what you actually heard; leave the rest empty. The reply
-        tells you what is still missing, so ask for that and nothing you already
-        have.
+        once. Pass null for anything they did not say. The reply tells you what
+        is still missing, so ask for that and nothing you already have.
 
         Args:
-            customer_name: Their name.
-            phone: Their callback number, digits or spoken.
-            street_address: House number and street.
-            town: The town.
-            problem: One line on what is wrong.
-            system_type: Furnace, boiler, air conditioner, mini-split, heat pump.
-            fuel: Gas or electric. Only ever for a furnace or a boiler.
-            day: "today", "tomorrow", or a weekday name.
-            window: One of the arrival windows you have offered.
-            sms_consent: True only if they said yes to the text consent question.
+            customer_name: Their name, or null.
+            phone: Their callback number, digits or spoken, or null.
+            street_address: House number and street, or null.
+            town: The town, or null.
+            problem: One line on what is wrong, or null.
+            system_type: Furnace, boiler, air conditioner, mini-split, heat pump, or null.
+            fuel: Gas or electric, or null. Only ever for a furnace or a boiler.
+            day: "today", "tomorrow", a weekday name, or null.
+            window: One of the arrival windows you have offered, or null.
+            sms_consent: True only if they said yes to the text consent question,
+                null if it has not been asked.
         """
         return timed("record_details", ops.record_details)(
-            customer_name=customer_name,
-            phone=phone,
-            street_address=street_address,
-            town=town,
-            problem=problem,
-            system_type=system_type,
-            fuel=fuel,
-            day=day,
-            window=window,
+            customer_name=_said(customer_name),
+            phone=_said(phone),
+            street_address=_said(street_address),
+            town=_said(town),
+            problem=_said(problem),
+            system_type=_said(system_type),
+            fuel=_said(fuel),
+            day=_said(day),
+            window=_said(window),
             sms_consent=sms_consent,
         )
 
@@ -407,7 +426,7 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
 
     @function_tool
     async def take_message(
-        caller_name: str, phone: str, summary: str, for_staff: str = ""
+        caller_name: str, phone: str, summary: str, for_staff: str | None = None
     ) -> str:
         """Take a message for a person at the business.
 
@@ -415,7 +434,7 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
             caller_name: The caller's name.
             phone: Their callback number.
             summary: One line on what they want.
-            for_staff: The person they asked for, if they named one.
+            for_staff: The person they asked for, or null if they named nobody.
         """
         return timed("take_message", ops.take_message)(
             caller_name=caller_name, phone=phone, summary=summary, for_staff=for_staff

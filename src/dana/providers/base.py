@@ -99,10 +99,7 @@ class LLMConfig:
     `scripts/eval_calls.py` is what settles this rather than argument -- swap
     the model, take fifty calls, compare the eight criteria.
 
-    `temperature` stays at 0.0. The prompt forbids repeating a sentence within a
-    call, and the usual fix -- raising temperature -- also loosens grip on the
-    gas-leak script, which is the one line that cannot slip.
-    :attr:`frequency_penalty` buys variety without touching that grip.
+    `temperature` is sent only where it is accepted -- see the attribute.
     """
 
     vendor: Literal["openai", "anthropic"] = "anthropic"
@@ -119,7 +116,19 @@ class LLMConfig:
     the fallback are usually different vendors -- that is the whole point of the
     cascade -- and they cannot share one credential."""
 
-    temperature: float = 0.0
+    temperature: float | None = None
+    """None means "do not send it", which is not the same as sending 0.
+
+    The newest Anthropic models reject `temperature` outright -- a 400 marked
+    non-retryable, so every turn fails instantly rather than degrading. It is
+    still valid and still worth pinning to 0 on OpenAI-compatible hosts, which
+    is why this is per-model rather than a global.
+
+    The original reason for 0 was that the gas-leak script had to come out
+    verbatim. That reason is gone: :mod:`dana.agent.safety` intercepts gas and
+    CO before inference, so the one line that cannot slip no longer depends on
+    the model's sampling at all."""
+
     frequency_penalty: float = 0.3
     """Discourages verbatim repetition. Preferred over temperature because it
     penalises reused tokens rather than flattening the whole distribution.

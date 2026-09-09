@@ -284,3 +284,41 @@ class TestEmergencyUsesTheSameMemory:
         said = ops.dispatch_emergency(problem="water heater is leaking")
         assert "Before I can send anyone" in said
         assert ops.runtime.appointment is None
+
+
+class TestUnsuppliedToolArguments:
+    """What the model sends when the caller did not say something.
+
+    livekit-agents renders every tool parameter into the schema's `required`
+    list whatever its Python default, and makes the unsupplied case expressible
+    by widening the type to ["string", "null"]. So the model must send all ten
+    keys on every call, and needs a legal way to say "not mentioned".
+
+    With `str = ""` defaults there was no such value, and against the real API
+    the model filled unknown slots with fragments of its own tool-call
+    scaffolding -- a phone number of "</parameter>\n" went into the booking as
+    the caller's callback number. Null is the honest answer.
+    """
+
+    def test_null_and_blank_both_mean_not_mentioned(self) -> None:
+        from dana.agent.tools import _said
+
+        assert _said(None) == ""
+        assert _said("") == ""
+        assert _said("   ") == ""
+
+    def test_a_real_value_survives_untouched(self) -> None:
+        from dana.agent.tools import _said
+
+        assert _said("14 Elm Street") == "14 Elm Street"
+        assert _said("  Wallingford  ") == "Wallingford"
+
+    def test_an_unmentioned_field_does_not_clear_what_is_known(
+        self, ops: DeskOperations
+    ) -> None:
+        from dana.agent.tools import _said
+
+        ops.record_details(street_address="14 Elm Street")
+        # The next turn: the model must send street_address, and sends null.
+        ops.record_details(problem="no heat", street_address=_said(None))
+        assert ops.runtime.slots.street_address == "14 Elm Street"

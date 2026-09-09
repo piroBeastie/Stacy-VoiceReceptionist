@@ -77,7 +77,7 @@ def pipeline_for(tenant: Tenant, *, overrides: PipelineConfig | None = None) -> 
             base_url=os.getenv("LLM_FALLBACK_BASE_URL", ""),
             model=os.environ["LLM_FALLBACK_MODEL"],
             api_key_env=os.getenv("LLM_FALLBACK_API_KEY_ENV", "LLM_FALLBACK_API_KEY"),
-            temperature=base.llm.temperature,
+            temperature=_opt_float("LLM_FALLBACK_TEMPERATURE", 0.0),
             frequency_penalty=base.llm.frequency_penalty,
             caching=base.llm.caching,
             max_tokens=base.llm.max_tokens,
@@ -103,7 +103,7 @@ def pipeline_for(tenant: Tenant, *, overrides: PipelineConfig | None = None) -> 
             model=os.getenv("LLM_MODEL", base.llm.model),
             api_key_env=os.getenv("LLM_API_KEY_ENV", base.llm.api_key_env),
             caching=os.getenv("LLM_CACHING", "1") not in {"0", "false", "no"},
-            temperature=float(os.getenv("LLM_TEMPERATURE", base.llm.temperature)),
+            temperature=_opt_float("LLM_TEMPERATURE", base.llm.temperature),
             frequency_penalty=float(
                 os.getenv("LLM_FREQUENCY_PENALTY", base.llm.frequency_penalty)
             ),
@@ -172,6 +172,20 @@ def build_stt(cfg: STTConfig) -> Any:
     raise ValueError(f"unknown STT vendor {cfg.vendor!r}")
 
 
+def _opt_float(name: str, default: float | None) -> float | None:
+    """Read a float that is allowed to be absent.
+
+    An empty value means "do not send this parameter", which is a different
+    instruction from "send zero" and the distinction matters: some hosts reject
+    the parameter entirely.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    return float(raw) if raw else None
+
+
 def _key(name: str) -> str:
     """Read a required credential, naming the variable if it is missing.
 
@@ -203,11 +217,13 @@ def _one_llm(cfg: LLMConfig) -> Any:
     if cfg.vendor == "anthropic":
         from livekit.plugins import anthropic  # noqa: PLC0415
 
-        kwargs: dict[str, Any] = {
-            "model": cfg.model,
-            "api_key": key,
-            "temperature": cfg.temperature,
-        }
+        kwargs: dict[str, Any] = {"model": cfg.model, "api_key": key}
+        # Sent only when set. The newest Anthropic models reject `temperature`
+        # with a 400 marked non-retryable, and because it is a perfectly valid
+        # *plugin* parameter, `supported()` cannot see the problem -- the
+        # rejection comes from the API. Every turn would have failed instantly.
+        if cfg.temperature is not None:
+            kwargs["temperature"] = cfg.temperature
         if cfg.caching:
             # Anthropic does not cache unless asked. Unasked, every turn pays
             # for the full ~5,700-token tenant prompt in both money and
@@ -223,11 +239,9 @@ def _one_llm(cfg: LLMConfig) -> Any:
 
     from livekit.plugins import openai  # noqa: PLC0415
 
-    kwargs = {
-        "model": cfg.model,
-        "api_key": key,
-        "temperature": cfg.temperature,
-    }
+    kwargs = {"model": cfg.model, "api_key": key}
+    if cfg.temperature is not None:
+        kwargs["temperature"] = cfg.temperature
     # livekit-plugins-openai 1.8 has no `frequency_penalty` parameter, so this
     # tuning was being dropped by `supported()` on every call -- the config
     # documented it as the reason temperature could stay at 0, and it had never
