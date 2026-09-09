@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from dana.prompt import PromptBuilder  # noqa: E402
+from dana.providers.base import TELEPHONY_FORMAT  # noqa: E402
 from dana.providers.registry import pipeline_for  # noqa: E402
 from dana.tenants import TenantStore  # noqa: E402
 
@@ -309,7 +310,11 @@ def check_live(tenant_dir: str) -> None:
             voice = ""
         if voice:
             code, detail = get(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=ulaw_8000",
+                # TELEPHONY_FORMAT, not a hardcoded one. The API accepts mu-law
+                # and the plugin does not, so probing mu-law here passed while
+                # the pipeline raised "Unsupported encoding" on the first turn.
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice}"
+                f"?output_format={TELEPHONY_FORMAT}",
                 {"xi-api-key": _env("ELEVENLABS_API_KEY"), "Content-Type": "application/json"},
                 json.dumps({"text": "Hi.", "model_id": _env("TTS_MODEL") or "eleven_flash_v2_5"}).encode(),
             )
