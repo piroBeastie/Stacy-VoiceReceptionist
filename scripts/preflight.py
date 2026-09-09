@@ -266,6 +266,71 @@ def check_storage() -> None:
             check(FAIL, f"writable {path}", str(exc))
 
 
+def check_live(tenant_dir: str) -> None:
+    """Ask each vendor whether the key actually works. Off by default.
+
+    Presence is not validity. A key can be present, correctly spelled, and still
+    refuse the one operation the call depends on -- scoped keys are the usual
+    reason, and the failure arrives as silence on a live call rather than as an
+    error anywhere a person is looking.
+
+    Each probe exercises the operation the pipeline actually performs, not a
+    cheaper one that happens to share the credential. The TTS probe synthesises
+    two characters through the tenant's own voice, because "the key is valid"
+    and "the key may synthesise with this voice" are different questions and
+    only the second one matters.
+    """
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    def get(url: str, headers: dict[str, str], data: bytes | None = None) -> tuple[int, str]:
+        try:
+            req = urllib.request.Request(url, headers=headers, data=data)
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.status, ""
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:200]
+            return e.code, detail
+        except Exception as exc:  # noqa: BLE001
+            return 0, f"{type(exc).__name__}: {exc}"
+
+    if _env("DEEPGRAM_API_KEY"):
+        code, detail = get(
+            "https://api.deepgram.com/v1/projects",
+            {"Authorization": f"Token {_env('DEEPGRAM_API_KEY')}"},
+        )
+        check(OK if code == 200 else FAIL, "live: deepgram", "" if code == 200 else detail)
+
+    if _env("ELEVENLABS_API_KEY"):
+        try:
+            tenant = TenantStore(tenant_dir).all()[0]
+            voice = tenant.voice_id
+        except Exception:  # noqa: BLE001
+            voice = ""
+        if voice:
+            code, detail = get(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=ulaw_8000",
+                {"xi-api-key": _env("ELEVENLABS_API_KEY"), "Content-Type": "application/json"},
+                json.dumps({"text": "Hi.", "model_id": _env("TTS_MODEL") or "eleven_flash_v2_5"}).encode(),
+            )
+            hint = ""
+            if "missing the permission" in detail:
+                hint = " — the key is valid but scoped; it needs text_to_speech"
+            check(
+                OK if code == 200 else FAIL,
+                "live: elevenlabs",
+                f"synthesised through {voice}" if code == 200 else detail + hint,
+            )
+
+    vendor = _env("LLM_VENDOR") or "anthropic"
+    if vendor == "anthropic" and _env("LLM_API_KEY"):
+        code, detail = get(
+            "https://api.anthropic.com/v1/models",
+            {"x-api-key": _env("LLM_API_KEY"), "anthropic-version": "2023-06-01"},
+        )
+        check(OK if code == 200 else FAIL, "live: anthropic", "" if code == 200 else detail)
+
+
 def check_known_gaps() -> None:
     """Things that are deliberately unfinished and should be said out loud."""
     check(
@@ -290,6 +355,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tenant-dir", default=os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data"))
     ap.add_argument("--strict", action="store_true", help="Treat warnings as failures too")
+    ap.add_argument(
+        "--live",
+        action="store_true",
+        help="Also call each vendor to prove the keys work. Costs a few TTS characters.",
+    )
     args = ap.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -307,6 +377,8 @@ def main() -> int:
     check_tenants(args.tenant_dir)
     check_sip(args.tenant_dir)
     check_storage()
+    if args.live:
+        check_live(args.tenant_dir)
     check_known_gaps()
 
     width = max(len(name) for _, name, _ in results) + 2
