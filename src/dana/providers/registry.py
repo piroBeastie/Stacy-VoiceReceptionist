@@ -106,6 +106,7 @@ def pipeline_for(tenant: Tenant, *, overrides: PipelineConfig | None = None) -> 
             model=os.getenv("LLM_MODEL", base.llm.model),
             api_key_env=os.getenv("LLM_API_KEY_ENV", base.llm.api_key_env),
             caching=os.getenv("LLM_CACHING", "1") not in {"0", "false", "no"},
+            strict_tool_schema=os.getenv("LLM_STRICT_TOOLS", "0") in {"1", "true", "yes"},
             temperature=_opt_float("LLM_TEMPERATURE", base.llm.temperature),
             frequency_penalty=float(
                 os.getenv("LLM_FREQUENCY_PENALTY", base.llm.frequency_penalty)
@@ -294,7 +295,13 @@ def _one_llm(cfg: LLMConfig) -> Any:
     if cfg.vendor == "anthropic":
         from livekit.plugins import anthropic  # noqa: PLC0415
 
-        kwargs: dict[str, Any] = {"model": cfg.model, "api_key": key}
+        kwargs: dict[str, Any] = {
+            "model": cfg.model,
+            "api_key": key,
+            # Strict tools cost about 3.5s per generation in grammar compilation,
+            # measured; see LLMConfig.strict_tool_schema.
+            "_strict_tool_schema": cfg.strict_tool_schema,
+        }
         # Sent only when set. The newest Anthropic models reject `temperature`
         # with a 400 marked non-retryable, and because it is a perfectly valid
         # *plugin* parameter, `supported()` cannot see the problem -- the

@@ -160,6 +160,25 @@ class LLMConfig:
     turn and paying for it once a call. OpenAI-compatible hosts do it
     automatically and ignore this; Anthropic requires asking."""
 
+    strict_tool_schema: bool = False
+    """Whether tools are sent with `strict: true`. Off, deliberately, and measured.
+
+    Strict schemas make the API compile a grammar for constrained decoding, and
+    it compiles one per request. Same prompt, same tools, same model, interleaved
+    over three rounds through the real plugin:
+
+        strict (the plugin default)   median 3762ms to first token, one at 9185ms
+        strict off                    median  809ms
+
+    Nothing else the plugin sends -- max_tokens, tool caching, message shape --
+    moved the number. Three and a half seconds per generation was the whole of
+    the latency on live calls, and the outliers reached the ten-second request
+    timeout, which is what turned turns into nineteen-second retries.
+
+    What strict bought, arguments that always match the schema, is already
+    covered: an optional field the caller never mentioned arrives null or absent,
+    and `_said` turns either into the blank the desk treats as "not mentioned"."""
+
     max_tokens: int | None = None
     """None means unbounded, matching main's `max_tokens: -1`."""
 
