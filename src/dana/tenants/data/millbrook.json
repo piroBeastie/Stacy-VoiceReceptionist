@@ -166,7 +166,7 @@
     "callback_timezone": "Eastern"
   },
   "voice_id": "cgSgspJ2msm6clMCkdW9",
-  "greeting": "Thanks for calling Millbrook Heating and Cooling, this is Casey, the AI assistant — heads up, this call's recorded. What can I help you with?",
+  "greeting": "Millbrook Heating and Cooling, this is Casey — I'm an AI assistant and this call's recorded. What can I help with?",
   "recording_disclosure_required": true,
   "sms_consent_required": true,
   "voice_speed": 1.0,

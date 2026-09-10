@@ -222,11 +222,15 @@ class FillerConfig:
 
     enabled: bool = True
 
-    soft_timeout_s: float = 0.9
+    soft_timeout_s: float = 0.5
     """Speak a filler if the model has produced nothing by now. -1 disables."""
 
     soft_timeout_phrases: tuple[str, ...] = ("Let me see.", "One sec.", "Okay, checking.")
     max_soft_timeouts_per_turn: int = 1
+    """Lowered from 0.9s. A person starts responding within about 300-500ms, so
+    0.9s of dead air before the cover phrase meant the pause the filler exists
+    to hide had already been heard. Covering it at 0.5s is the difference
+    between a considered pause and a system thinking."""
     """More than one filler in a single turn reads as a stall, not a person."""
 
     pre_tool_threshold_s: float = 0.4
