@@ -376,3 +376,39 @@ class TestWhoseVoiceTheAgentAnswers:
         cfg = TurnConfig()
         assert cfg.vad_activation_threshold > 0.5
         assert cfg.vad_min_speech_s > 0.05
+
+
+class TestTheFirstTurnDoesNotPayForImports:
+    """Lazy imports on the event loop are not a slow first turn.
+
+    The SDK measured 607ms spent importing httpcore's SSL machinery *on the
+    event loop*, inside a job, at the moment of the first LLM or TTS request. A
+    blocked loop cannot read from a websocket, so the symptom was not latency:
+    it was `Could not synthesize` and `ReadTimeout` against vendors that were
+    healthy, on a call where the greeting played and nothing else ever did.
+    """
+
+    def test_warming_is_idempotent_and_cheap_to_repeat(self) -> None:
+        from dana.providers.registry import warm_imports
+
+        warm_imports()
+        warm_imports()  # modules are cached; the second call must not raise
+
+    def test_warming_actually_loads_the_ssl_stack(self) -> None:
+        import sys
+
+        from dana.providers.registry import warm_imports
+
+        warm_imports()
+        assert "ssl" in sys.modules
+
+    def test_the_input_filter_can_be_switched_without_a_build(
+        self, millbrook, monkeypatch
+    ) -> None:
+        # When a caller is being cut up, "is the filter doing it?" should be one
+        # environment variable and a restart, not a deploy.
+        monkeypatch.setenv("DANA_NOISE_CANCELLATION", "off")
+        assert pipeline_for(millbrook).turn.noise_cancellation == "off"
+
+        monkeypatch.delenv("DANA_NOISE_CANCELLATION", raising=False)
+        assert pipeline_for(millbrook).turn.noise_cancellation == "bvc_telephony"

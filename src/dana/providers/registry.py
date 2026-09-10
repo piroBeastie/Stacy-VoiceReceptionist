@@ -20,6 +20,7 @@ import importlib
 import inspect
 import logging
 import os
+from dataclasses import replace
 from typing import Any, Callable
 
 from dana.providers.base import (
@@ -126,7 +127,15 @@ def pipeline_for(tenant: Tenant, *, overrides: PipelineConfig | None = None) -> 
             first_chunk_chars=base.tts.first_chunk_chars,
             chunk_length_schedule=base.tts.chunk_length_schedule,
         ),
-        turn=base.turn,
+        # Switchable without a redeploy: if a caller is ever being cut up, the
+        # first question is whether the input filter is doing it, and that
+        # answer should not cost a build.
+        turn=replace(
+            base.turn,
+            noise_cancellation=os.getenv(  # type: ignore[arg-type]
+                "DANA_NOISE_CANCELLATION", base.turn.noise_cancellation
+            ),
+        ),
         filler=base.filler,
         max_call_duration_s=base.max_call_duration_s,
     )
@@ -207,6 +216,37 @@ def register_plugins() -> None:
             # Optional vendors. A tenant configured for one that is not
             # installed fails later, in build_*, naming the vendor.
             log.debug("%s not installed", module)
+
+
+def warm_imports() -> None:
+    """Pay for lazy imports before a caller is on the line, not during.
+
+    Python imports the SSL machinery under httpx/httpcore on first use, and the
+    SDK measured that costing 607ms *on the event loop* -- inside a job, at the
+    moment of the first LLM or TTS request. A blocked loop cannot read from a
+    websocket, so the symptom was not a slow first turn: it was
+    `Could not synthesize` and `ReadTimeout` against vendors that were perfectly
+    healthy, and a call where the greeting played and nothing else ever did.
+
+    Every import here is something the first turn would otherwise pay for while
+    someone waits. They run at prewarm, on a process nobody is talking to.
+    """
+    import ssl  # noqa: PLC0415
+
+    # Building a context forces the certificate machinery to load now.
+    ssl.create_default_context()
+
+    for module in (
+        "httpcore._sync.connection",
+        "httpcore._async.connection",
+        "httpx",
+        "anthropic",
+        "aiohttp",
+    ):
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            log.debug("%s not installed; nothing to warm", module)
 
 
 def _opt_float(name: str, default: float | None) -> float | None:
@@ -454,6 +494,10 @@ def prewarm(userdata: dict[str, Any], *, turn: TurnConfig | None = None) -> None
     """
     turn = turn or TurnConfig()
     try:
+        warm_imports()
+    except Exception:  # noqa: BLE001 - warming is an optimisation, never a gate
+        log.exception("import warm-up failed; the first turn will pay for it")
+    try:
         userdata["vad"] = build_vad(turn)
     except Exception:  # noqa: BLE001 - a cold VAD is better than a dead worker
         log.exception("VAD prewarm failed; the first call will load it inline")
@@ -466,6 +510,7 @@ __all__ = [
     "build_tts",
     "build_turn_detector",
     "build_noise_cancellation",
+    "warm_imports",
     "build_vad",
     "pipeline_for",
     "prewarm",
