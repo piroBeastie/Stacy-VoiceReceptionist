@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from dana.agent import CallRuntime, DeskOperations
-from dana.agent.slots import BookingSlots, normalize_phone, spoken_digits
-from dana.desk import CalendarStore, MessageStore
-from dana.tenants import Tenant
+from stacy.agent import CallRuntime, DeskOperations
+from stacy.agent.slots import BookingSlots, normalize_phone, spoken_digits
+from stacy.desk import CalendarStore, MessageStore
+from stacy.tenants import Tenant
 
 
 @pytest.fixture
@@ -301,14 +301,14 @@ class TestUnsuppliedToolArguments:
     """
 
     def test_null_and_blank_both_mean_not_mentioned(self) -> None:
-        from dana.agent.tools import _said
+        from stacy.agent.tools import _said
 
         assert _said(None) == ""
         assert _said("") == ""
         assert _said("   ") == ""
 
     def test_a_real_value_survives_untouched(self) -> None:
-        from dana.agent.tools import _said
+        from stacy.agent.tools import _said
 
         assert _said("14 Elm Street") == "14 Elm Street"
         assert _said("  Wallingford  ") == "Wallingford"
@@ -316,7 +316,7 @@ class TestUnsuppliedToolArguments:
     def test_an_unmentioned_field_does_not_clear_what_is_known(
         self, ops: DeskOperations
     ) -> None:
-        from dana.agent.tools import _said
+        from stacy.agent.tools import _said
 
         ops.record_details(street_address="14 Elm Street")
         # The next turn: the model must send street_address, and sends null.

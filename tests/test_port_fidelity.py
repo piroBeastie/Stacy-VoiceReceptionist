@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from dana.evals import active_criteria, active_fields
-from dana.prompt import PromptBuilder
-from dana.providers.base import TELEPHONY_FORMAT
-from dana.providers.registry import pipeline_for
-from dana.tenants import TenantStore
+from stacy.evals import active_criteria, active_fields
+from stacy.prompt import PromptBuilder
+from stacy.providers.base import TELEPHONY_FORMAT
+from stacy.providers.registry import pipeline_for
+from stacy.tenants import TenantStore
 
-TENANT_DIR = "src/dana/tenants/data"
+TENANT_DIR = "src/stacy/tenants/data"
 
 
 @pytest.fixture(scope="module")
@@ -254,7 +254,7 @@ class TestAudioPath:
     def test_speed_past_the_telephony_ceiling_is_refused(self, millbrook) -> None:
         # Past 1.2 consonants clip at 8kHz, costing comprehension faster than it
         # buys energy -- so it is a validation error, not a judgement call.
-        from dana.tenants import Tenant
+        from stacy.tenants import Tenant
 
         with pytest.raises(ValueError):
             Tenant.model_validate({**millbrook.model_dump(), "voice_speed": 1.6})
@@ -311,8 +311,8 @@ class TestTheCascadeIsTwoAccounts:
 
     def test_a_missing_key_names_the_variable_it_wanted(self, monkeypatch) -> None:
         # The failure a person has to act on is "which variable", not "401".
-        from dana.providers.base import LLMConfig
-        from dana.providers.registry import _one_llm
+        from stacy.providers.base import LLMConfig
+        from stacy.providers.registry import _one_llm
 
         monkeypatch.delenv("LLM_FALLBACK_API_KEY", raising=False)
         cfg = LLMConfig(vendor="openai", model="whatever", api_key_env="LLM_FALLBACK_API_KEY")
@@ -322,8 +322,8 @@ class TestTheCascadeIsTwoAccounts:
     def test_a_blank_key_is_a_missing_key(self, monkeypatch) -> None:
         # An empty value in a .env file is the usual way this goes wrong, and it
         # is not the same failure as an absent variable unless we say so.
-        from dana.providers.base import LLMConfig
-        from dana.providers.registry import _one_llm
+        from stacy.providers.base import LLMConfig
+        from stacy.providers.registry import _one_llm
 
         monkeypatch.setenv("LLM_FALLBACK_API_KEY", "   ")
         cfg = LLMConfig(vendor="openai", model="whatever", api_key_env="LLM_FALLBACK_API_KEY")
@@ -351,15 +351,15 @@ class TestWhoseVoiceTheAgentAnswers:
     """
 
     def test_telephony_background_voice_cancellation_is_the_default(self) -> None:
-        from dana.providers.base import TurnConfig
+        from stacy.providers.base import TurnConfig
 
         assert TurnConfig().noise_cancellation == "bvc_telephony"
 
     def test_it_can_be_turned_off_for_debugging(self) -> None:
         # When a difficult caller is being cut up, you need to know whether the
         # filter is what is doing it.
-        from dana.providers.base import TurnConfig
-        from dana.providers.registry import build_noise_cancellation
+        from stacy.providers.base import TurnConfig
+        from stacy.providers.registry import build_noise_cancellation
 
         assert build_noise_cancellation(TurnConfig(noise_cancellation="off")) is None
 
@@ -367,14 +367,14 @@ class TestWhoseVoiceTheAgentAnswers:
         # Silero defaults to 16kHz. Phone audio is 8kHz, so the default ran the
         # detector on upsampled narrowband -- no extra information, one extra
         # resample per frame.
-        from dana.providers.base import TELEPHONY_SAMPLE_RATE, TurnConfig
+        from stacy.providers.base import TELEPHONY_SAMPLE_RATE, TurnConfig
 
         assert TurnConfig().vad_sample_rate == TELEPHONY_SAMPLE_RATE == 8000
 
     def test_the_bar_for_counting_as_speech_is_above_silero_defaults(self) -> None:
         # Background speech sits lower in the mix than the caller, and 50ms is
         # short enough that a door closing counts as someone starting to talk.
-        from dana.providers.base import TurnConfig
+        from stacy.providers.base import TurnConfig
 
         cfg = TurnConfig()
         assert cfg.vad_activation_threshold > 0.5
@@ -392,7 +392,7 @@ class TestTheFirstTurnDoesNotPayForImports:
     """
 
     def test_warming_is_idempotent_and_cheap_to_repeat(self) -> None:
-        from dana.providers.registry import warm_imports
+        from stacy.providers.registry import warm_imports
 
         warm_imports()
         warm_imports()  # modules are cached; the second call must not raise
@@ -400,7 +400,7 @@ class TestTheFirstTurnDoesNotPayForImports:
     def test_warming_actually_loads_the_ssl_stack(self) -> None:
         import sys
 
-        from dana.providers.registry import warm_imports
+        from stacy.providers.registry import warm_imports
 
         warm_imports()
         assert "ssl" in sys.modules
@@ -410,8 +410,8 @@ class TestTheFirstTurnDoesNotPayForImports:
     ) -> None:
         # When a caller is being cut up, "is the filter doing it?" should be one
         # environment variable and a restart, not a deploy.
-        monkeypatch.setenv("DANA_NOISE_CANCELLATION", "off")
+        monkeypatch.setenv("STACY_NOISE_CANCELLATION", "off")
         assert pipeline_for(millbrook).turn.noise_cancellation == "off"
 
-        monkeypatch.delenv("DANA_NOISE_CANCELLATION", raising=False)
+        monkeypatch.delenv("STACY_NOISE_CANCELLATION", raising=False)
         assert pipeline_for(millbrook).turn.noise_cancellation == "bvc_telephony"

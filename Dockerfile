@@ -28,7 +28,7 @@ RUN apt-get update \
 # Dependencies before source, same reason: editing an agent file should not
 # re-resolve the dependency tree.
 COPY pyproject.toml README.md ./
-COPY src/dana/__init__.py src/dana/__init__.py
+COPY src/stacy/__init__.py src/stacy/__init__.py
 RUN pip install --no-cache-dir -e .
 
 COPY src/ src/
@@ -36,27 +36,27 @@ COPY scripts/ scripts/
 
 # A non-root user, because this process handles call audio and writes
 # transcripts. /app/data is where both land.
-RUN useradd --create-home --uid 10001 dana \
+RUN useradd --create-home --uid 10001 stacy \
     && mkdir -p /app/data /app/.cache \
-    && chown -R dana:dana /app
+    && chown -R stacy:stacy /app
 
 # The model cache has to live somewhere the runtime user can read, and the
 # download has to happen AS that user. Fetching as root put the weights under
-# /root/.cache while the worker ran as `dana` and looked in /home/dana: the
+# /root/.cache while the worker ran as `stacy` and looked in /home/stacy: the
 # files were in the image and still unreachable, and a deployed worker died with
 # `Could not find file "model_q8.onnx"`. Endpointing then degrades to raw VAD,
 # which is the difference between waiting for someone to finish a sentence and
 # cutting them off in the middle of their address.
 ENV HF_HOME=/app/.cache/huggingface
-USER dana
+USER stacy
 
 # `download-files` is the SDK's own hook for this; if it moves, the build fails
 # loudly here rather than the first caller waiting through a model fetch.
-RUN python -m dana.agent.entrypoint download-files
+RUN python -m stacy.agent.entrypoint download-files
 
-ENV DANA_TENANT_DIR=/app/src/dana/tenants/data \
-    DANA_DATA_DIR=/app/data \
-    DANA_TRACE_DIR=/app/data/traces
+ENV STACY_TENANT_DIR=/app/src/stacy/tenants/data \
+    STACY_DATA_DIR=/app/data \
+    STACY_TRACE_DIR=/app/data/traces
 
 # Bookings, transcripts and traces are on disk. Mount this or lose them on every
 # redeploy -- and note that the calendar's lock is per-process, so a shared
@@ -76,4 +76,4 @@ HEALTHCHECK --interval=60s --timeout=20s --start-period=30s --retries=2 \
 
 # `start` is the production mode: register with LiveKit and wait for jobs.
 # Override with `dev` for autoreload, or `console` to talk to it over your mic.
-CMD ["python", "-m", "dana.agent.entrypoint", "start"]
+CMD ["python", "-m", "stacy.agent.entrypoint", "start"]

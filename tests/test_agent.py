@@ -13,11 +13,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from dana.agent import CallRuntime, DeskOperations, FillerPolicy, RepetitionTracker
-from dana.desk import CalendarStore, MessageStore
-from dana.metrics import Stage, TurnTrace
-from dana.providers.base import FillerConfig
-from dana.tenants import Tenant
+from stacy.agent import CallRuntime, DeskOperations, FillerPolicy, RepetitionTracker
+from stacy.desk import CalendarStore, MessageStore
+from stacy.metrics import Stage, TurnTrace
+from stacy.providers.base import FillerConfig
+from stacy.tenants import Tenant
 
 
 class _CollectingSink:
@@ -356,37 +356,37 @@ class TestRouting:
     """Which business a call is answered as."""
 
     def test_the_dialed_number_decides(self, store, tenant: Tenant) -> None:
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
         assert _route(store, tenant.phone_number).tenant_id == "millbrook"
 
     def test_an_unclaimed_number_is_a_loud_failure(self, store) -> None:
         # A caller reaching the wrong business is the worst possible place to
         # discover a routing mistake.
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
         with pytest.raises(KeyError):
             _route(store, "+15550000000")
 
     def test_no_dialed_number_and_no_fallback_raises(self, store, monkeypatch) -> None:
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
-        monkeypatch.delenv("DANA_DEFAULT_TENANT", raising=False)
-        with pytest.raises(KeyError, match="DANA_DEFAULT_TENANT"):
+        monkeypatch.delenv("STACY_DEFAULT_TENANT", raising=False)
+        with pytest.raises(KeyError, match="STACY_DEFAULT_TENANT"):
             _route(store, "")
 
     def test_the_fallback_makes_console_mode_work(self, store, monkeypatch) -> None:
         # Without this, the fastest way to hear the agent -- talking to it
         # through a laptop mic -- raises before it says a word.
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
-        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        monkeypatch.setenv("STACY_DEFAULT_TENANT", "millbrook")
         assert _route(store, "").tenant_id == "millbrook"
 
     def test_the_fallback_never_overrides_a_real_number(self, store, monkeypatch) -> None:
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
-        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        monkeypatch.setenv("STACY_DEFAULT_TENANT", "millbrook")
         with pytest.raises(KeyError):
             _route(store, "+15550000000")
 
@@ -446,7 +446,7 @@ class TestLastUserText:
             self.text_content = text
 
     def test_takes_the_most_recent_user_turn(self) -> None:
-        from dana.agent.nodes import _last_user_text
+        from stacy.agent.nodes import _last_user_text
 
         ctx = type("Ctx", (), {"items": [
             self._Item("user", "first"),
@@ -458,12 +458,12 @@ class TestLastUserText:
     def test_an_unknown_shape_degrades_to_empty(self) -> None:
         # Empty routes to the *quiet* branch of the override, which is the safe
         # direction to fail in.
-        from dana.agent.nodes import _last_user_text
+        from stacy.agent.nodes import _last_user_text
 
         assert _last_user_text(object()) == ""
 
     def test_list_content_is_joined(self) -> None:
-        from dana.agent.nodes import _last_user_text
+        from stacy.agent.nodes import _last_user_text
 
         item = type("I", (), {"role": "user", "text_content": None, "content": ["I smell", "gas"]})()
         ctx = type("Ctx", (), {"items": [item]})()
@@ -570,31 +570,31 @@ class TestRoutingOnJunk:
     def test_a_mock_attribute_is_not_a_dialed_number(self, store, monkeypatch) -> None:
         from unittest.mock import MagicMock
 
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
-        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        monkeypatch.setenv("STACY_DEFAULT_TENANT", "millbrook")
         assert _route(store, MagicMock()).tenant_id == "millbrook"
 
     @pytest.mark.parametrize("junk", [None, 0, [], {}, "not-a-number", "+1 (213) x"])
     def test_anything_unphonelike_falls_back(self, store, monkeypatch, junk) -> None:
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
-        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        monkeypatch.setenv("STACY_DEFAULT_TENANT", "millbrook")
         assert _route(store, junk).tenant_id == "millbrook"
 
     def test_junk_without_a_fallback_still_raises_helpfully(self, store, monkeypatch) -> None:
         from unittest.mock import MagicMock
 
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
-        monkeypatch.delenv("DANA_DEFAULT_TENANT", raising=False)
-        with pytest.raises(KeyError, match="DANA_DEFAULT_TENANT"):
+        monkeypatch.delenv("STACY_DEFAULT_TENANT", raising=False)
+        with pytest.raises(KeyError, match="STACY_DEFAULT_TENANT"):
             _route(store, MagicMock())
 
     def test_a_real_number_still_wins(self, store, tenant: Tenant, monkeypatch) -> None:
-        from dana.agent.entrypoint import _route
+        from stacy.agent.entrypoint import _route
 
-        monkeypatch.setenv("DANA_DEFAULT_TENANT", "millbrook")
+        monkeypatch.setenv("STACY_DEFAULT_TENANT", "millbrook")
         real = tenant.phone_number
         assert _route(store, real).phone_number == real
         # and with the whitespace a trunk sometimes sends
@@ -619,7 +619,7 @@ class TestWhatTheCallerSaidIsVisible:
             calendar=CalendarStore(tmp_path / "cal"),
             messages=MessageStore(tmp_path / "msg"),
         )
-        with caplog.at_level("INFO", logger="dana.agent"):
+        with caplog.at_level("INFO", logger="stacy.agent"):
             rt.record_user("my furnace is making a noise")
 
         assert "my furnace is making a noise" in caplog.text
@@ -634,7 +634,7 @@ class TestWhatTheCallerSaidIsVisible:
             calendar=CalendarStore(tmp_path / "cal"),
             messages=MessageStore(tmp_path / "msg"),
         )
-        with caplog.at_level("INFO", logger="dana.agent"):
+        with caplog.at_level("INFO", logger="stacy.agent"):
             rt.record_user("   ")
 
         assert "c-blank" not in caplog.text
@@ -645,14 +645,14 @@ class TestAccentIsATenantProperty:
         # en-US is tuned for American speakers and transcribes other English
         # accents noticeably worse, which a caller experiences as the agent
         # being unable to hear them.
-        from dana.providers.registry import pipeline_for
+        from stacy.providers.registry import pipeline_for
 
         assert tenant.stt_language == "en"
         assert pipeline_for(tenant).stt.language == "en"
 
     def test_a_tenant_can_override_it(self, tenant) -> None:
-        from dana.providers.registry import pipeline_for
-        from dana.tenants import Tenant
+        from stacy.providers.registry import pipeline_for
+        from stacy.tenants import Tenant
 
         indian = Tenant.model_validate({**tenant.model_dump(), "stt_language": "en-IN"})
         assert pipeline_for(indian).stt.language == "en-IN"
@@ -669,25 +669,25 @@ class TestTheAgentDoesNotInterruptItsOwnPause:
     """
 
     def test_thinking_is_not_silence(self) -> None:
-        from dana.agent.entrypoint import _AGENT_BUSY
+        from stacy.agent.entrypoint import _AGENT_BUSY
 
         assert "thinking" in _AGENT_BUSY
 
     def test_initializing_is_not_silence(self) -> None:
         # The first turn of a cold call spends real time here.
-        from dana.agent.entrypoint import _AGENT_BUSY
+        from stacy.agent.entrypoint import _AGENT_BUSY
 
         assert "initializing" in _AGENT_BUSY
 
     def test_speaking_is_not_silence(self) -> None:
-        from dana.agent.entrypoint import _AGENT_BUSY
+        from stacy.agent.entrypoint import _AGENT_BUSY
 
         assert "speaking" in _AGENT_BUSY
 
     def test_listening_and_idle_are_the_only_quiet_states(self) -> None:
         # These two are the actual "nobody is doing anything" states, and the
         # only ones that should ever accumulate toward re-engaging.
-        from dana.agent.entrypoint import _AGENT_BUSY
+        from stacy.agent.entrypoint import _AGENT_BUSY
 
         assert "listening" not in _AGENT_BUSY
         assert "idle" not in _AGENT_BUSY

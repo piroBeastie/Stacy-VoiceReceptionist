@@ -12,11 +12,11 @@ import json
 
 import pytest
 
-from dana.agent.safety import OVERRIDE_SCRIPT, QUIET_SCRIPT
-from dana.delivery import CallArchive
-from dana.evals import Judge, format_transcript, grade_safety_override, summarize
-from dana.evals.report import regressions
-from dana.tenants import Tenant
+from stacy.agent.safety import OVERRIDE_SCRIPT, QUIET_SCRIPT
+from stacy.delivery import CallArchive
+from stacy.evals import Judge, format_transcript, grade_safety_override, summarize
+from stacy.evals.report import regressions
+from stacy.tenants import Tenant
 
 
 def _t(role: str, text: str) -> dict[str, str]:

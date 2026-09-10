@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dana.metrics import load_traces, summarize  # noqa: E402
+from stacy.metrics import load_traces, summarize  # noqa: E402
 
 PHASE4_P50_MS = 700
 PHASE4_P95_MS = 1100
@@ -24,7 +24,7 @@ PHASE4_P95_MS = 1100
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("trace_dir", nargs="?", default=os.getenv("DANA_TRACE_DIR", "data/traces"))
+    ap.add_argument("trace_dir", nargs="?", default=os.getenv("STACY_TRACE_DIR", "data/traces"))
     ap.add_argument("--tenant", help="Filter to one tenant_id")
     ap.add_argument("--since-calls", type=int, help="Only the N most recent calls")
     ap.add_argument("--gate", action="store_true", help="Exit non-zero if Phase 4 targets miss")

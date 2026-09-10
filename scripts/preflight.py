@@ -25,10 +25,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dana.prompt import PromptBuilder  # noqa: E402
-from dana.providers.base import TELEPHONY_FORMAT  # noqa: E402
-from dana.providers.registry import pipeline_for  # noqa: E402
-from dana.tenants import TenantStore  # noqa: E402
+from stacy.prompt import PromptBuilder  # noqa: E402
+from stacy.providers.base import TELEPHONY_FORMAT  # noqa: E402
+from stacy.providers.registry import pipeline_for  # noqa: E402
+from stacy.tenants import TenantStore  # noqa: E402
 
 OK, WARN, FAIL = "PASS", "WARN", "FAIL"
 _SYMBOL = {OK: "  ok  ", WARN: " warn ", FAIL: " FAIL "}
@@ -116,7 +116,7 @@ def check_env() -> None:
             f"{_env('LLM_FALLBACK_VENDOR') or 'openai'}/{_env('LLM_FALLBACK_MODEL')}",
         )
 
-    if not (_env("DANA_WEBHOOK_URL") and _env("DANA_WEBHOOK_SECRET")):
+    if not (_env("STACY_WEBHOOK_URL") and _env("STACY_WEBHOOK_SECRET")):
         check(
             WARN,
             "post-call webhook",
@@ -124,7 +124,7 @@ def check_env() -> None:
             "will not be kept (calls are still archived locally)",
         )
     else:
-        check(OK, "post-call webhook", _env("DANA_WEBHOOK_URL"))
+        check(OK, "post-call webhook", _env("STACY_WEBHOOK_URL"))
 
     if _env("EVAL_MODEL") and _env("EVAL_MODEL") == _env("LLM_MODEL"):
         check(WARN, "EVAL_MODEL", "same as LLM_MODEL — that is self-marking")
@@ -168,15 +168,15 @@ def check_tenants(tenant_dir: str) -> None:
         level = WARN if len(notes) > 2 else OK
         check(level, label, ", ".join(notes))
 
-    default = _env("DANA_DEFAULT_TENANT")
+    default = _env("STACY_DEFAULT_TENANT")
     if default:
         try:
             store.get(default)
-            check(OK, "DANA_DEFAULT_TENANT", f"{default} (console/dev routing)")
+            check(OK, "STACY_DEFAULT_TENANT", f"{default} (console/dev routing)")
         except KeyError:
-            check(FAIL, "DANA_DEFAULT_TENANT", f"{default!r} is not a known tenant_id")
+            check(FAIL, "STACY_DEFAULT_TENANT", f"{default!r} is not a known tenant_id")
     else:
-        check(WARN, "DANA_DEFAULT_TENANT", "unset — console and dev mode cannot route a call")
+        check(WARN, "STACY_DEFAULT_TENANT", "unset — console and dev mode cannot route a call")
 
 
 def check_sip(tenant_dir: str) -> None:
@@ -224,7 +224,7 @@ def check_sip(tenant_dir: str) -> None:
     else:
         check(OK, "SIP numbers", f"{len(configured)} number(s) match the tenants")
 
-    agent_name = _env("DANA_AGENT_NAME")
+    agent_name = _env("STACY_AGENT_NAME")
     named_in_rule = ""
     if rule_file.exists():
         try:
@@ -253,8 +253,8 @@ def check_sip(tenant_dir: str) -> None:
 
 def check_storage() -> None:
     """The directories the call writes to have to exist and be writable."""
-    data = _env("DANA_DATA_DIR") or "data"
-    traces = _env("DANA_TRACE_DIR") or "data/traces"
+    data = _env("STACY_DATA_DIR") or "data"
+    traces = _env("STACY_TRACE_DIR") or "data/traces"
     for path in (f"{data}/calendar", f"{data}/messages", f"{data}/calls", traces):
         try:
             p = Path(path)
@@ -358,7 +358,7 @@ def check_known_gaps() -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--tenant-dir", default=os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data"))
+    ap.add_argument("--tenant-dir", default=os.getenv("STACY_TENANT_DIR", "src/stacy/tenants/data"))
     ap.add_argument("--strict", action="store_true", help="Treat warnings as failures too")
     ap.add_argument(
         "--live",

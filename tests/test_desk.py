@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from dana.delivery import ConsentMissing, LoggingProvider, SmsSender
-from dana.desk import (
+from stacy.delivery import ConsentMissing, LoggingProvider, SmsSender
+from stacy.desk import (
     BookingError,
     CalendarStore,
     MessageStore,
@@ -22,7 +22,7 @@ from dana.desk import (
     classify_priority,
     resolve_day,
 )
-from dana.tenants import Tenant
+from stacy.tenants import Tenant
 
 
 @pytest.fixture

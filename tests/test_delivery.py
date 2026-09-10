@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from dana.delivery import RETRY_DELAYS_S, SIGNATURE_HEADER, WebhookSender, call_payload, sign, verify
-from dana.delivery.webhook import MAX_CONSECUTIVE_FAILURES
+from stacy.delivery import RETRY_DELAYS_S, SIGNATURE_HEADER, WebhookSender, call_payload, sign, verify
+from stacy.delivery.webhook import MAX_CONSECUTIVE_FAILURES
 
 SECRET = "whsec_not_a_real_secret"
 

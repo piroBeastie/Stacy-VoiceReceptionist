@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from dana.tenants import Tenant, TenantStore
+from stacy.tenants import Tenant, TenantStore
 
-TENANT_DIR = "src/dana/tenants/data"
+TENANT_DIR = "src/stacy/tenants/data"
 
 
 @pytest.fixture(scope="session")

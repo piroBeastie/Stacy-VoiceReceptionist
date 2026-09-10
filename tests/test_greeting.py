@@ -18,8 +18,8 @@ import json
 
 import pytest
 
-from dana.agent import greeting
-from dana.tenants import Tenant
+from stacy.agent import greeting
+from stacy.tenants import Tenant
 
 
 class TestTheCacheKey:

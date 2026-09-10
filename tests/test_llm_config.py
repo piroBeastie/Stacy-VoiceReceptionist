@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from dana.providers.base import LLMConfig
-from dana.providers.registry import pipeline_for
+from stacy.providers.base import LLMConfig
+from stacy.providers.registry import pipeline_for
 
 
 def test_strict_tool_schemas_are_off_by_default() -> None:
@@ -36,7 +36,7 @@ def test_the_real_plugin_receives_it(monkeypatch) -> None:
     # dropped by `supported()` with only a warning, and strict would quietly
     # come back on through the plugin's own default.
     pytest.importorskip("livekit.plugins.anthropic")
-    from dana.providers.registry import _one_llm
+    from stacy.providers.registry import _one_llm
 
     monkeypatch.setenv("LLM_API_KEY", "sk-ant-test-not-a-real-key")
     model = _one_llm(LLMConfig(vendor="anthropic", model="claude-haiku-4-5-20251001"))

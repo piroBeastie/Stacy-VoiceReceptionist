@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from dana.agent import BackchannelFilter
+from stacy.agent import BackchannelFilter
 
 
 @pytest.fixture

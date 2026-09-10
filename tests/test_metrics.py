@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dana.metrics import JsonlSink, Stage, TurnTrace, load_traces, summarize
-from dana.metrics.report import percentile
+from stacy.metrics import JsonlSink, Stage, TurnTrace, load_traces, summarize
+from stacy.metrics.report import percentile
 
 BASE = 1_000_000_000
 
@@ -94,8 +94,8 @@ class TestTheTraceReachesSomewhereReadable:
     """
 
     def _runtime(self, tenant, tmp_path):
-        from dana.agent import CallRuntime
-        from dana.desk import CalendarStore, MessageStore
+        from stacy.agent import CallRuntime
+        from stacy.desk import CalendarStore, MessageStore
 
         return CallRuntime.build(
             tenant=tenant,
@@ -111,7 +111,7 @@ class TestTheTraceReachesSomewhereReadable:
         for stage in (Stage.USER_STOPPED, Stage.STT_FINAL, Stage.LLM_FIRST_TOKEN,
                       Stage.TTS_FIRST_BYTE, Stage.AUDIO_OUT):
             rt.mark(stage)
-        with caplog.at_level("INFO", logger="dana.agent"):
+        with caplog.at_level("INFO", logger="stacy.agent"):
             rt.flush_turn()
 
         assert "response_ms=" in caplog.text
@@ -124,7 +124,7 @@ class TestTheTraceReachesSomewhereReadable:
         rt = self._runtime(tenant, tmp_path)
         rt.begin_turn()
         rt.mark(Stage.USER_STOPPED)
-        with caplog.at_level("INFO", logger="dana.agent"):
+        with caplog.at_level("INFO", logger="stacy.agent"):
             rt.flush_turn()
 
         assert "response_ms=" not in caplog.text

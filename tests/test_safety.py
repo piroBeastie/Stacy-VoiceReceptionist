@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from dana.agent.safety import (
+from stacy.agent.safety import (
     OVERRIDE_SCRIPT,
     QUIET_SCRIPT,
     SafetyInterceptor,

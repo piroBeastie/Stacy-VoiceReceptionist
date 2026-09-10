@@ -1,4 +1,4 @@
-# dana
+# stacy
 
 Multi-tenant AI voice receptionist. Self-hosted cascade, built to match or beat
 ElevenLabs Agents on latency while keeping the orchestration in our own code.
@@ -29,7 +29,7 @@ Twilio Elastic SIP Trunk
         |  (SIP/RTP, mu-law 8k, no websocket hop)
    LiveKit SIP
         |
-   LiveKit Agents worker  <- src/dana/agent/entrypoint.py
+   LiveKit Agents worker  <- src/stacy/agent/entrypoint.py
         |
    +----+--------+-----------+------------+----------+
    |    |        |           |            |          |
@@ -133,7 +133,7 @@ cp .env.example .env   # then fill it in
 Run the worker:
 
 ```bash
-python -m dana.agent.entrypoint dev
+python -m stacy.agent.entrypoint dev
 ```
 
 Latency table:
@@ -187,12 +187,12 @@ count too.
 ### 1. Your laptop, no phone number
 
 ```bash
-python -m dana.agent.entrypoint console
+python -m stacy.agent.entrypoint console
 ```
 
 Talks to you through your mic. No LiveKit project, no trunk, no charge except
 the STT/LLM/TTS keys. `console` and `dev` carry no SIP attributes, so there is
-no dialed number to route on — set `DANA_DEFAULT_TENANT=millbrook` in `.env` or
+no dialed number to route on — set `STACY_DEFAULT_TENANT=millbrook` in `.env` or
 this raises before the agent says a word. On a live trunk the dialed number
 always wins and the fallback is logged at warning level, because answering as
 the wrong business is worse than a stack trace.
@@ -258,7 +258,7 @@ webhook:
    transcode in both directions and no fidelity, on a call that is 8 kHz at the
    caller's microphone anyway.
 
-**Dispatch.** With `DANA_AGENT_NAME` unset the worker joins every room in the
+**Dispatch.** With `STACY_AGENT_NAME` unset the worker joins every room in the
 project — fewest moving parts, right for one agent. Set it and dispatch becomes
 explicit: the worker joins only rooms whose rule names it. Both the worker and
 `sip_config.py` read that one variable, and preflight fails if they disagree,
@@ -267,7 +267,7 @@ because a mismatch is a call that connects and then sits in silence.
 Then run the worker against it:
 
 ```bash
-python -m dana.agent.entrypoint dev     # autoreload, one process
+python -m stacy.agent.entrypoint dev     # autoreload, one process
 ```
 
 Call the number. The first call is the one that turns every latency figure in
@@ -305,7 +305,7 @@ lk agent update-secrets --secrets-file .env
 
 `livekit.toml`'s `agent.id` is LiveKit's own agent identifier — `lk` rewrites it
 to a `CA_...` value on first create, so do not hand-set it to the agent name.
-The *registered* name comes from `DANA_AGENT_NAME`, and it has to match the SIP
+The *registered* name comes from `STACY_AGENT_NAME`, and it has to match the SIP
 dispatch rule's `agent_name`. A mismatch between those two is a call that
 connects, creates a room, and is joined by nobody — silence to the caller,
 success in every dashboard.
@@ -317,7 +317,7 @@ python scripts/preflight.py --live      # every key proven before anything ships
 python scripts/prerender_greetings.py   # so the first caller is not the one who waits
 ```
 
-The greeting cache lives under `DANA_DATA_DIR`. On hosted infrastructure that is
+The greeting cache lives under `STACY_DATA_DIR`. On hosted infrastructure that is
 ephemeral, so the first call in a fresh instance re-renders it once and every
 call after is warm — correct either way, just cheaper if you pre-render.
 
@@ -325,8 +325,8 @@ call after is warm — correct either way, just cheaper if you pre-render.
 
 
 ```bash
-docker build -t dana .
-docker run --env-file .env -v dana-data:/app/data dana
+docker build -t stacy .
+docker run --env-file .env -v stacy-data:/app/data stacy
 ```
 
 The worker **dials out** to LiveKit and registers. It is not a server, listens
@@ -346,7 +346,7 @@ Two things to get right:
   already the seam for it. `start` mode drains gracefully, so redeploys are safe
   at one replica; concurrency is not.
 
-Set `DANA_WEBHOOK_URL` and `DANA_WEBHOOK_SECRET` before taking traffic. The
+Set `STACY_WEBHOOK_URL` and `STACY_WEBHOOK_SECRET` before taking traffic. The
 agent closes every call by telling the caller someone will have their details.
 Nothing on the receiving end makes that a lie the agent tells in a confident
 voice. Payloads are signed HMAC-SHA256 with a timestamp, and retried on a

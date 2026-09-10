@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from dana.agent.speech import strip_audio_tags, strip_audio_tags_stream
+from stacy.agent.speech import strip_audio_tags, strip_audio_tags_stream
 
 
 def _streamed(chunks: list[str]) -> str:

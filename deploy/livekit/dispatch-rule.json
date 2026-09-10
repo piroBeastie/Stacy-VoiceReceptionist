@@ -1,5 +1,5 @@
 {
-  "name": "dana-dispatch",
+  "name": "stacy-dispatch",
   "trunk_ids": [],
   "rule": {
     "dispatchRuleIndividual": {
@@ -9,7 +9,7 @@
   "room_config": {
     "agents": [
       {
-        "agent_name": "dana"
+        "agent_name": "stacy"
       }
     ]
   }

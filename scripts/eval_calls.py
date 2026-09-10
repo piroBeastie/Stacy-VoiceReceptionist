@@ -23,11 +23,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dana.delivery import CallArchive  # noqa: E402
-from dana.evals import Judge, openai_completer, summarize  # noqa: E402
-from dana.evals.judge import CallGrade, CriterionResult  # noqa: E402
-from dana.evals.report import EvalReport, regressions  # noqa: E402
-from dana.tenants import TenantStore  # noqa: E402
+from stacy.delivery import CallArchive  # noqa: E402
+from stacy.evals import Judge, openai_completer, summarize  # noqa: E402
+from stacy.evals.judge import CallGrade, CriterionResult  # noqa: E402
+from stacy.evals.report import EvalReport, regressions  # noqa: E402
+from stacy.tenants import TenantStore  # noqa: E402
 
 
 def _load_baseline(path: Path) -> EvalReport:
@@ -47,8 +47,8 @@ def _load_baseline(path: Path) -> EvalReport:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--calls", default=f"{os.getenv('DANA_DATA_DIR', 'data')}/calls")
-    ap.add_argument("--tenant-dir", default="src/dana/tenants/data")
+    ap.add_argument("--calls", default=f"{os.getenv('STACY_DATA_DIR', 'data')}/calls")
+    ap.add_argument("--tenant-dir", default="src/stacy/tenants/data")
     ap.add_argument("--tenant", help="Only grade calls for this tenant_id")
     ap.add_argument("--limit", type=int, help="Grade at most N calls")
     ap.add_argument("--save", help="Write the grades to this path as a baseline")

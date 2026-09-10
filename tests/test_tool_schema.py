@@ -14,9 +14,9 @@ import pytest
 
 pytest.importorskip("livekit.agents")
 
-from dana.agent import CallRuntime, DeskOperations  # noqa: E402
-from dana.agent.tools import build_function_tools  # noqa: E402
-from dana.desk import CalendarStore, MessageStore  # noqa: E402
+from stacy.agent import CallRuntime, DeskOperations  # noqa: E402
+from stacy.agent.tools import build_function_tools  # noqa: E402
+from stacy.desk import CalendarStore, MessageStore  # noqa: E402
 
 TOOLS = {
     "check_availability",
@@ -58,7 +58,7 @@ def test_the_run_context_never_reaches_the_model(schemas) -> None:
 
 
 def test_the_context_name_resolves_at_module_scope() -> None:
-    import dana.agent.tools as module
+    import stacy.agent.tools as module
     from livekit.agents import RunContext
 
     assert module.RunContext is RunContext

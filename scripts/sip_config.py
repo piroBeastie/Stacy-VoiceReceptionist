@@ -3,7 +3,7 @@
     python scripts/sip_config.py                    # write deploy/livekit/*.json
     python scripts/sip_config.py --trunk-id ST_xxx  # fill the dispatch rule in
 
-The number a caller dials is the routing key: :func:`dana.agent.entrypoint._route`
+The number a caller dials is the routing key: :func:`stacy.agent.entrypoint._route`
 looks up the tenant by it and refuses to guess. So the number in the LiveKit
 inbound trunk and the number in the tenant file have to be the same string, and
 the way to guarantee that is to never type it twice. This reads the tenants and
@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dana.tenants import TenantStore  # noqa: E402
+from stacy.tenants import TenantStore  # noqa: E402
 
 OUT = Path("deploy/livekit")
 
@@ -63,7 +63,7 @@ def dispatch_rule(trunk_id: str, agent_name: str, name: str) -> dict:
     callers in a shared room, which for a receptionist would mean two customers
     hearing each other.
 
-    With DANA_AGENT_NAME set the worker registers under that name and is
+    With STACY_AGENT_NAME set the worker registers under that name and is
     dispatched only where it is named. Without it, the worker joins every room
     in the project automatically. Automatic is fewer moving parts; named is what
     you want the moment a second kind of agent shares the project.
@@ -174,7 +174,7 @@ async def _apply(numbers: list[str], agent_name: str, trunk_name: str, rule_name
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--tenant-dir", default=os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data"))
+    ap.add_argument("--tenant-dir", default=os.getenv("STACY_TENANT_DIR", "src/stacy/tenants/data"))
     ap.add_argument("--trunk-id", default="", help="ST_... from `lk sip inbound create`")
     ap.add_argument("--out", default=str(OUT))
     ap.add_argument(
@@ -215,17 +215,17 @@ def main() -> int:
         print(f"two tenants claim the same number: {sorted(dupes)}", file=sys.stderr)
         return 1
 
-    agent_name = os.getenv("DANA_AGENT_NAME", "").strip()
+    agent_name = os.getenv("STACY_AGENT_NAME", "").strip()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     trunk_path = out / "inbound-trunk.json"
     rule_path = out / "dispatch-rule.json"
     trunk_path.write_text(
-        json.dumps(inbound_trunk(numbers, "dana-inbound"), indent=2) + "\n", encoding="utf-8"
+        json.dumps(inbound_trunk(numbers, "stacy-inbound"), indent=2) + "\n", encoding="utf-8"
     )
     rule_path.write_text(
-        json.dumps(dispatch_rule(args.trunk_id, agent_name, "dana-dispatch"), indent=2) + "\n",
+        json.dumps(dispatch_rule(args.trunk_id, agent_name, "stacy-dispatch"), indent=2) + "\n",
         encoding="utf-8",
     )
 
@@ -237,17 +237,17 @@ def main() -> int:
     print()
 
     if agent_name:
-        print(f"Dispatch is explicit: the worker must run with DANA_AGENT_NAME={agent_name!r},")
+        print(f"Dispatch is explicit: the worker must run with STACY_AGENT_NAME={agent_name!r},")
         print("and only rooms naming it get an agent. A mismatch here is a silent call.")
     else:
-        print("Dispatch is automatic (DANA_AGENT_NAME unset): the worker joins every")
+        print("Dispatch is automatic (STACY_AGENT_NAME unset): the worker joins every")
         print("room in the project. Fine for one agent, wrong the moment there are two.")
     print()
     if args.apply:
         import asyncio  # noqa: PLC0415
 
         print("--- applying to LiveKit ---")
-        asyncio.run(_apply(numbers, agent_name, "dana-inbound", "dana-dispatch"))
+        asyncio.run(_apply(numbers, agent_name, "stacy-inbound", "stacy-dispatch"))
         print()
         print("On the Twilio side, the number above must be attached to an Elastic SIP")
         print("Trunk whose Origination URI points at this project, with the codec left")

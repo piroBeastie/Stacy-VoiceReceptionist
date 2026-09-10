@@ -25,8 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dana.prompt import PromptBuilder  # noqa: E402
-from dana.tenants import TenantStore  # noqa: E402
+from stacy.prompt import PromptBuilder  # noqa: E402
+from stacy.tenants import TenantStore  # noqa: E402
 
 AGENT_ID = "agent_9901m0z6x9kse2z91paeeyrzb36s"
 BRANCH_ID = "agtbrch_1801m0z6xaf2f7c8vmdntgj8snqn"
@@ -51,7 +51,7 @@ def main() -> int:
         print("ELEVENLABS_API_KEY not set", file=sys.stderr)
         return 2
 
-    store = TenantStore(os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data"))
+    store = TenantStore(os.getenv("STACY_TENANT_DIR", "src/stacy/tenants/data"))
     local = PromptBuilder().render(store.get("millbrook"))
     remote = fetch_remote_prompt(api_key)
 
@@ -60,7 +60,7 @@ def main() -> int:
             remote.splitlines(),
             local.splitlines(),
             fromfile="elevenlabs/main",
-            tofile="dana/rendered",
+            tofile="stacy/rendered",
             lineterm="",
             n=1,
         )

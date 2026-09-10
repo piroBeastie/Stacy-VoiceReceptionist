@@ -8,8 +8,8 @@ ever happening. Words are the one signal noise cannot fake.
 
 from __future__ import annotations
 
-from dana.agent.turns import NoiseHeldTurnGuard
-from dana.providers.base import TurnConfig
+from stacy.agent.turns import NoiseHeldTurnGuard
+from stacy.providers.base import TurnConfig
 
 
 def _guard() -> NoiseHeldTurnGuard:

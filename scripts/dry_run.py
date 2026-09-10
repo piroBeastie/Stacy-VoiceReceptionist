@@ -24,22 +24,22 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dana.agent import CallRuntime, DeskOperations  # noqa: E402
-from dana.delivery import LoggingProvider, SmsSender, sign, verify  # noqa: E402
-from dana.delivery.sms import ConsentMissing  # noqa: E402
-from dana.desk import CalendarStore, MessageStore  # noqa: E402
-from dana.tenants import TenantStore  # noqa: E402
+from stacy.agent import CallRuntime, DeskOperations  # noqa: E402
+from stacy.delivery import LoggingProvider, SmsSender, sign, verify  # noqa: E402
+from stacy.delivery.sms import ConsentMissing  # noqa: E402
+from stacy.desk import CalendarStore, MessageStore  # noqa: E402
+from stacy.tenants import TenantStore  # noqa: E402
 import json  # noqa: E402
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tenant", default="millbrook")
-    ap.add_argument("--tenant-dir", default="src/dana/tenants/data")
+    ap.add_argument("--tenant-dir", default="src/stacy/tenants/data")
     ap.add_argument(
         "--keep",
         action="store_true",
-        help="Write into DANA_DATA_DIR instead of a throwaway directory",
+        help="Write into STACY_DATA_DIR instead of a throwaway directory",
     )
     args = ap.parse_args()
 
@@ -54,7 +54,7 @@ def main() -> int:
     logging.disable(logging.WARNING)
 
     tenant = TenantStore(args.tenant_dir).get(args.tenant)
-    root = Path("data") if args.keep else Path(tempfile.mkdtemp(prefix="dana-dryrun-"))
+    root = Path("data") if args.keep else Path(tempfile.mkdtemp(prefix="stacy-dryrun-"))
     calendar = CalendarStore(root / "calendar")
     messages = MessageStore(root / "messages")
 

@@ -22,9 +22,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dana.agent import greeting  # noqa: E402
-from dana.providers.registry import build_tts, pipeline_for, register_plugins  # noqa: E402
-from dana.tenants import TenantStore  # noqa: E402
+from stacy.agent import greeting  # noqa: E402
+from stacy.providers.registry import build_tts, pipeline_for, register_plugins  # noqa: E402
+from stacy.tenants import TenantStore  # noqa: E402
 
 
 async def run(tenant_dir: str, cache_dir: str) -> int:
@@ -60,7 +60,7 @@ async def run(tenant_dir: str, cache_dir: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--tenant-dir", default=os.getenv("DANA_TENANT_DIR", "src/dana/tenants/data"))
+    ap.add_argument("--tenant-dir", default=os.getenv("STACY_TENANT_DIR", "src/stacy/tenants/data"))
     ap.add_argument("--cache-dir", default=None)
     args = ap.parse_args()
 
@@ -73,7 +73,7 @@ def main() -> int:
     except ImportError:
         pass
 
-    cache = args.cache_dir or f"{os.getenv('DANA_DATA_DIR', 'data')}/greetings"
+    cache = args.cache_dir or f"{os.getenv('STACY_DATA_DIR', 'data')}/greetings"
     register_plugins()
     return asyncio.run(run(args.tenant_dir, cache))
 
