@@ -383,11 +383,53 @@ def build_turn_detector(cfg: TurnConfig) -> Any | None:
     return EnglishModel()
 
 
-def build_vad() -> Any:
-    """Silero VAD. Runs in-process, sub-millisecond, no network hop."""
+def build_vad(cfg: TurnConfig | None = None) -> Any:
+    """Silero VAD. Runs in-process, sub-millisecond, no network hop.
+
+    Tuned rather than defaulted. Silero assumes 16kHz and a 50ms minimum
+    utterance, which on a phone line means running on upsampled narrowband and
+    treating a door closing as the caller starting to speak.
+    """
     from livekit.plugins import silero  # noqa: PLC0415
 
-    return silero.VAD.load()
+    cfg = cfg or TurnConfig()
+    kwargs: dict[str, Any] = {
+        "sample_rate": cfg.vad_sample_rate,
+        "activation_threshold": cfg.vad_activation_threshold,
+        "min_speech_duration": cfg.vad_min_speech_s,
+        "min_silence_duration": cfg.vad_min_silence_s,
+    }
+    return silero.VAD.load(**supported(silero.VAD.load, kwargs))
+
+
+def build_noise_cancellation(cfg: TurnConfig) -> Any | None:
+    """The input filter that decides whose voice the agent is listening to.
+
+    Returned rather than applied here so the entrypoint can hand it to
+    RoomInputOptions, and so a version of the SDK without the parameter degrades
+    to no filtering instead of a TypeError mid-call.
+    """
+    if cfg.noise_cancellation == "off":
+        return None
+    try:
+        from livekit.plugins import noise_cancellation  # noqa: PLC0415
+    except ImportError:
+        log.warning(
+            "livekit-plugins-noise-cancellation is not installed -- background "
+            "voices will be transcribed and answered alongside the caller"
+        )
+        return None
+
+    factory = {
+        "bvc_telephony": "BVCTelephony",
+        "bvc": "BVC",
+        "nc": "NC",
+    }[cfg.noise_cancellation]
+    made = getattr(noise_cancellation, factory, None)
+    if made is None:
+        log.warning("noise cancellation %r unavailable on this plugin version", factory)
+        return None
+    return made()
 
 
 def prewarm(userdata: dict[str, Any], *, turn: TurnConfig | None = None) -> None:
@@ -410,9 +452,9 @@ def prewarm(userdata: dict[str, Any], *, turn: TurnConfig | None = None) -> None
     Failures here are logged and swallowed: a worker that cannot prewarm should
     still take calls, just slower on the first one.
     """
-    del turn  # kept for call-site compatibility; see above
+    turn = turn or TurnConfig()
     try:
-        userdata["vad"] = build_vad()
+        userdata["vad"] = build_vad(turn)
     except Exception:  # noqa: BLE001 - a cold VAD is better than a dead worker
         log.exception("VAD prewarm failed; the first call will load it inline")
 
@@ -423,6 +465,7 @@ __all__ = [
     "build_stt",
     "build_tts",
     "build_turn_detector",
+    "build_noise_cancellation",
     "build_vad",
     "pipeline_for",
     "prewarm",

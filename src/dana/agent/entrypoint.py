@@ -45,6 +45,7 @@ from dana.metrics import JsonlSink
 from dana.providers.base import PipelineConfig
 from dana.providers.registry import (
     build_llm,
+    build_noise_cancellation,
     build_stt,
     build_tts,
     build_turn_detector,
@@ -222,7 +223,18 @@ async def entrypoint(ctx: Any) -> None:
     await session.start(
         agent=build_agent(runtime, ops),
         room=ctx.room,
-        room_input_options=RoomInputOptions(),
+        room_input_options=RoomInputOptions(
+            **supported(
+                RoomInputOptions,
+                # Isolates the caller from whoever else is in the room. Without
+                # it a television counts as a participant in the conversation:
+                # its speech is transcribed, endpointed and answered exactly as
+                # the caller's is, because nothing downstream can tell them
+                # apart. `supported` keeps an older SDK degrading to unfiltered
+                # audio rather than raising while a call is connecting.
+                {"noise_cancellation": build_noise_cancellation(cfg.turn)},
+            )
+        ),
     )
 
     # The greeting is verbatim tenant config, not model output: the AI

@@ -255,6 +255,37 @@ class TurnConfig:
     obviously is not.
     """
 
+    noise_cancellation: Literal["bvc_telephony", "bvc", "nc", "off"] = "bvc_telephony"
+    """Which of LiveKit's input filters to put in front of the caller's audio.
+
+    "bvc_telephony" is Background Voice Cancellation tuned for 8kHz phone audio.
+    It isolates the person actually talking to the agent and suppresses other
+    voices and room noise, which is the difference between a receptionist who
+    answers you and one who answers your television.
+
+    Plain "nc" removes non-speech noise only, so a second person in the room
+    still gets transcribed and still gets answered. "off" is for debugging what
+    the filter is doing to a difficult caller.
+    """
+
+    vad_sample_rate: int = TELEPHONY_SAMPLE_RATE
+    """Silero defaults to 16kHz. Telephony audio is 8kHz, so the default meant
+    the detector ran on upsampled narrowband -- inventing no information and
+    costing a resample on every frame."""
+
+    vad_activation_threshold: float = 0.6
+    """Raised from Silero's 0.5. Background speech sits lower in the mix than
+    the caller, so a higher bar is most of what stops the agent replying to a
+    television."""
+
+    vad_min_speech_s: float = 0.10
+    """Raised from 0.05. Fifty milliseconds is short enough that a door closing
+    counts as the caller starting to talk."""
+
+    vad_min_silence_s: float = 0.55
+    """Silero's default. Lower cuts people off mid-sentence; the semantic
+    detector, not this, owns the endpointing decision."""
+
     use_semantic_endpointing: bool = True
     min_endpointing_delay_s: float = 0.2
     """Wait after an utterance the detector judges complete.

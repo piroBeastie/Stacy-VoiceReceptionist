@@ -21,6 +21,9 @@ dependencies = [
     # call on Windows and on any slim container. It passed locally only because
     # the ambient interpreter happened to have it.
     "tzdata",
+    # Background voice cancellation. Without it a second voice in the caller's
+    # room is transcribed, endpointed and answered exactly as the caller is.
+    "livekit-plugins-noise-cancellation~=0.2",
     # Post-call webhook transport. Arrives transitively via livekit-agents
     # today; pinned here because delivery must not depend on that staying true.
     "aiohttp>=3.9",

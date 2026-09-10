@@ -337,3 +337,42 @@ class TestTheCascadeIsTwoAccounts:
 
         monkeypatch.setenv("LLM_CACHING", "0")
         assert pipeline_for(millbrook).llm.caching is False
+
+
+class TestWhoseVoiceTheAgentAnswers:
+    """A second voice in the caller's room is not a second caller.
+
+    Nothing downstream can tell them apart: a television's speech is
+    transcribed, endpointed and answered exactly as the caller's is. The filter
+    is the only place that distinction can be made.
+    """
+
+    def test_telephony_background_voice_cancellation_is_the_default(self) -> None:
+        from dana.providers.base import TurnConfig
+
+        assert TurnConfig().noise_cancellation == "bvc_telephony"
+
+    def test_it_can_be_turned_off_for_debugging(self) -> None:
+        # When a difficult caller is being cut up, you need to know whether the
+        # filter is what is doing it.
+        from dana.providers.base import TurnConfig
+        from dana.providers.registry import build_noise_cancellation
+
+        assert build_noise_cancellation(TurnConfig(noise_cancellation="off")) is None
+
+    def test_the_vad_runs_at_the_rate_the_audio_actually_is(self) -> None:
+        # Silero defaults to 16kHz. Phone audio is 8kHz, so the default ran the
+        # detector on upsampled narrowband -- no extra information, one extra
+        # resample per frame.
+        from dana.providers.base import TELEPHONY_SAMPLE_RATE, TurnConfig
+
+        assert TurnConfig().vad_sample_rate == TELEPHONY_SAMPLE_RATE == 8000
+
+    def test_the_bar_for_counting_as_speech_is_above_silero_defaults(self) -> None:
+        # Background speech sits lower in the mix than the caller, and 50ms is
+        # short enough that a door closing counts as someone starting to talk.
+        from dana.providers.base import TurnConfig
+
+        cfg = TurnConfig()
+        assert cfg.vad_activation_threshold > 0.5
+        assert cfg.vad_min_speech_s > 0.05
