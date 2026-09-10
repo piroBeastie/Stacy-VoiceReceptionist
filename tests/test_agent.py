@@ -649,3 +649,38 @@ class TestAccentIsATenantProperty:
 
         indian = Tenant.model_validate({**tenant.model_dump(), "stt_language": "en-IN"})
         assert pipeline_for(indian).stt.language == "en-IN"
+
+
+class TestTheAgentDoesNotInterruptItsOwnPause:
+    """"Still there?" while the agent is thinking.
+
+    AgentState is initializing | idle | listening | thinking | speaking. The
+    watchdog reset only on "speaking", so every second spent generating a reply
+    counted as the line going quiet -- and a slow turn walked itself into the
+    agent asking the caller whether they were still on the phone, immediately
+    before answering them.
+    """
+
+    def test_thinking_is_not_silence(self) -> None:
+        from dana.agent.entrypoint import _AGENT_BUSY
+
+        assert "thinking" in _AGENT_BUSY
+
+    def test_initializing_is_not_silence(self) -> None:
+        # The first turn of a cold call spends real time here.
+        from dana.agent.entrypoint import _AGENT_BUSY
+
+        assert "initializing" in _AGENT_BUSY
+
+    def test_speaking_is_not_silence(self) -> None:
+        from dana.agent.entrypoint import _AGENT_BUSY
+
+        assert "speaking" in _AGENT_BUSY
+
+    def test_listening_and_idle_are_the_only_quiet_states(self) -> None:
+        # These two are the actual "nobody is doing anything" states, and the
+        # only ones that should ever accumulate toward re-engaging.
+        from dana.agent.entrypoint import _AGENT_BUSY
+
+        assert "listening" not in _AGENT_BUSY
+        assert "idle" not in _AGENT_BUSY

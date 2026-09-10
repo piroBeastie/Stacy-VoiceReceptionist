@@ -289,6 +289,12 @@ def _wire(session: Any, runtime: CallRuntime) -> None:
         runtime.finish()
 
 
+_AGENT_BUSY = frozenset({"initializing", "thinking", "speaking"})
+"""Agent states that are not silence. `AgentState` is
+initializing | idle | listening | thinking | speaking, and only the last two
+mean nobody is doing anything."""
+
+
 async def _silence_watchdog(session: Any, runtime: CallRuntime) -> None:
     """Re-engage a quiet line, then close it.
 
@@ -308,7 +314,11 @@ async def _silence_watchdog(session: Any, runtime: CallRuntime) -> None:
     try:
         while True:
             await asyncio.sleep(tick)
-            if getattr(session, "agent_state", None) == "speaking":
+            # "thinking" and "initializing" are the agent working, not the line
+            # going quiet. Counting them meant a slow turn walked its own way
+            # into "Still there?" -- the agent interrupting its own pause to ask
+            # the caller whether they were still on the phone.
+            if getattr(session, "agent_state", None) in _AGENT_BUSY:
                 quiet_for, asked = 0.0, False
                 continue
             if getattr(session, "user_state", None) == "speaking":

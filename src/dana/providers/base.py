@@ -102,12 +102,17 @@ class LLMConfig:
     only LLM number a caller can hear. The *model* sets whether the answer is
     right.
 
-    The default is a frontier model rather than the fastest host, because on
-    this workload a wrong answer is not a slower call, it is a technician sent
-    to the wrong address or a price quoted that the business will not honour.
-    The half-second is bought back elsewhere: preemptive generation starts the
-    turn on the interim transcript, the prompt prefix is cached, and a soft
-    filler covers the gap before a tool call. None of those recover a mistake.
+    The default was Sonnet 5 on the reasoning that a wrong answer costs more
+    than a slow one. Measured against this prompt and these tools, Sonnet takes
+    about 3.0 seconds to its first token where Haiku 4.5 takes about 0.9 -- and
+    three seconds of silence before the agent repeats a caller's own name back
+    is not a slower call either, it is the caller deciding nobody is there.
+
+    Haiku is the default now. The line that genuinely cannot slip does not
+    depend on it: `dana.agent.safety` intercepts gas and CO before inference.
+    LLM_MODEL is one environment variable, so going back is trivial -- and
+    `scripts/eval_calls.py` is what should decide it, over archived calls,
+    rather than either of these arguments.
 
     `scripts/eval_calls.py` is what settles this rather than argument -- swap
     the model, take fifty calls, compare the eight criteria.
@@ -123,7 +128,7 @@ class LLMConfig:
     """Empty means the vendor's own default endpoint. Only meaningful for
     "openai", where it is what selects the host."""
 
-    model: str = "claude-sonnet-5"
+    model: str = "claude-haiku-4-5-20251001"
     api_key_env: str = "LLM_API_KEY"
     """*Which environment variable* holds the key, not the key. The primary and
     the fallback are usually different vendors -- that is the whole point of the
@@ -222,15 +227,17 @@ class FillerConfig:
 
     enabled: bool = True
 
-    soft_timeout_s: float = 0.5
+    soft_timeout_s: float = 0.8
     """Speak a filler if the model has produced nothing by now. -1 disables."""
 
     soft_timeout_phrases: tuple[str, ...] = ("Let me see.", "One sec.", "Okay, checking.")
     max_soft_timeouts_per_turn: int = 1
-    """Lowered from 0.9s. A person starts responding within about 300-500ms, so
-    0.9s of dead air before the cover phrase meant the pause the filler exists
-    to hide had already been heard. Covering it at 0.5s is the difference
-    between a considered pause and a system thinking."""
+    """The wait this covers should be rare. At 0.5s against a model taking three
+    seconds to its first token, every single turn tripped it -- so the caller
+    heard "One sec" before being told their own name back, and the cover phrase
+    became the thing that needed covering. The fix was the model, not the
+    threshold; this sits above a healthy turn so it fires only when something
+    has actually gone slow."""
     """More than one filler in a single turn reads as a stall, not a person."""
 
     pre_tool_threshold_s: float = 0.4
@@ -331,7 +338,7 @@ class TurnConfig:
     """Keep transcribing speech that is not allowed to interrupt, so it carries
     into the next turn instead of being discarded."""
 
-    turn_timeout_s: float = 7.0
+    turn_timeout_s: float = 9.0
     """Silence before the agent re-engages. The prompt tells it to ask 'Still
     there?'; without a timer it never gets the turn in which to do so."""
 
