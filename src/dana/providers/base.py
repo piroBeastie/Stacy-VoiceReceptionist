@@ -227,17 +227,18 @@ class FillerConfig:
 
     enabled: bool = True
 
-    soft_timeout_s: float = 0.8
+    soft_timeout_s: float = 1.5
     """Speak a filler if the model has produced nothing by now. -1 disables."""
 
     soft_timeout_phrases: tuple[str, ...] = ("Let me see.", "One sec.", "Okay, checking.")
     max_soft_timeouts_per_turn: int = 1
-    """The wait this covers should be rare. At 0.5s against a model taking three
-    seconds to its first token, every single turn tripped it -- so the caller
-    heard "One sec" before being told their own name back, and the cover phrase
-    became the thing that needed covering. The fix was the model, not the
-    threshold; this sits above a healthy turn so it fires only when something
-    has actually gone slow."""
+    """The wait this covers should be rare, and twice it has not been.
+
+    A caller hears "One sec" before an answer that needed no covering, and the
+    cover phrase becomes the thing that needs covering. Measured turns put the
+    model's first token consistently under this, so what remains above it is a
+    genuine stall -- a tool out at the network, or a model having a bad
+    minute -- which is the only case worth speaking into."""
     """More than one filler in a single turn reads as a stall, not a person."""
 
     pre_tool_threshold_s: float = 0.4

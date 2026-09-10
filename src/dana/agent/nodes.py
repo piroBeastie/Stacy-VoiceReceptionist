@@ -72,6 +72,13 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
             tool that can fire, and no token budget between the caller saying
             "I smell gas" and hearing what to do.
             """
+            # The pipeline has decided the caller finished and is committing to
+            # a reply. Marking it here is what separates "still waiting to be
+            # sure you stopped talking" from "the model is thinking" -- two very
+            # different problems that, unmarked, both showed up as llm_ttft_ms
+            # and sent the last round of tuning at the wrong one.
+            runtime.mark(Stage.ENDPOINT_COMMITTED)
+
             spoken = _last_user_text(chat_ctx)
             runtime.safety.scan(spoken)
             if runtime.safety.latched:

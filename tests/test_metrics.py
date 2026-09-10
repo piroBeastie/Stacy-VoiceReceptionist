@@ -132,3 +132,35 @@ class TestTheTraceReachesSomewhereReadable:
     def test_flushing_nothing_is_not_an_error(self, tenant, tmp_path):
         rt = self._runtime(tenant, tmp_path)
         rt.flush_turn()  # no open turn
+
+
+class TestEndpointingIsSeparableFromThinking:
+    """Two different waits that looked identical in the numbers.
+
+    Stage.ENDPOINT_COMMITTED existed and nothing marked it, so the time spent
+    deciding the caller had finished was folded into llm_ttft_ms. A measured
+    3.3s "LLM" turn was therefore some unknown mix of waiting to be sure
+    somebody stopped talking and a model thinking -- and tuning aimed at the
+    wrong one of those does nothing.
+    """
+
+    def _trace(self):
+        return TurnTrace(call_id="c", tenant_id="t", turn_index=0)
+
+    def test_endpointing_and_thinking_get_their_own_spans(self) -> None:
+        t = self._trace()
+        for stage in (Stage.USER_STOPPED, Stage.ENDPOINT_COMMITTED,
+                      Stage.LLM_FIRST_TOKEN, Stage.TTS_FIRST_BYTE, Stage.AUDIO_OUT):
+            t.mark(stage)
+        spans = t.spans()
+        assert "endpoint_ms" in spans, "the endpointing wait must be visible on its own"
+        assert "llm_ttft_ms" in spans
+
+    def test_the_spans_still_sum_to_the_headline(self) -> None:
+        # Whatever the split, the parts have to account for the whole, or the
+        # report invites people to tune something that is not the cost.
+        t = self._trace()
+        for stage in (Stage.USER_STOPPED, Stage.ENDPOINT_COMMITTED, Stage.STT_FINAL,
+                      Stage.LLM_FIRST_TOKEN, Stage.TTS_FIRST_BYTE, Stage.AUDIO_OUT):
+            t.mark(stage)
+        assert abs(sum(t.spans().values()) - t.response_ms) < 1.0
