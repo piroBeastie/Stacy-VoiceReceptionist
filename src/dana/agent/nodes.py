@@ -1,5 +1,5 @@
-"""The instrumented agent: where timings are actually taken, and where a slow
-model gets covered with speech instead of silence.
+"""The instrumented agent: where timings are actually taken, and where the
+model's words are made safe to speak.
 
 Timings are taken *here*, inside the pipeline nodes, rather than from the
 session's `metrics_collected` event. That event reports durations after the fact
@@ -21,11 +21,11 @@ names and their yielded types are the surface most likely to have moved.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, AsyncIterable
 
 from dana.agent.runtime import CallRuntime
+from dana.agent.speech import strip_audio_tags_stream
 from dana.agent.tools import DeskOperations, build_function_tools
 from dana.metrics import Stage
 
@@ -43,10 +43,9 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
 
     ops = ops or DeskOperations(runtime)
     tools = build_function_tools(ops)
-    soft_timeout = runtime.pipeline.filler.soft_timeout_s
 
     class InstrumentedAgent(Agent):
-        """Agent that times its own critical path and covers its own pauses."""
+        """Agent that times its own critical path and keeps tags out of the voice."""
 
         def __init__(self) -> None:
             super().__init__(instructions=runtime.system_prompt, tools=tools)
@@ -59,24 +58,26 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                 yield event
 
         async def llm_node(self, chat_ctx: Any, tools: Any, model_settings: Any) -> Any:
-            """Stream the model, marking first token and covering a slow start.
+            """Stream the model, marking when it commits and when it first speaks.
 
-            The filler is yielded into the model's own output stream, so it is
-            synthesized by the same TTS connection and lands in the transcript
-            as something the agent said -- which it is. That does mean it enters
-            the chat context; the platform's soft timeout behaves the same way.
+            Nothing is spoken here but the model's own words. A filler used to be
+            yielded into this stream on a timer -- and the SDK runs this node a
+            second time after every tool call, a generation that on this prompt
+            almost always says nothing because the model already answered. The
+            timer fired on that one, so "One sec" arrived after the answer, on
+            nearly every turn. Slow tools are covered where they run instead;
+            see :func:`dana.agent.tools.build_function_tools`.
 
-            Before any of that: the gas/CO override. If it has latched, the
+            Before anything else: the gas/CO override. If it has latched, the
             model is not called at all. That is what makes it a control rather
             than an instruction -- there is no sampling step to go wrong, no
             tool that can fire, and no token budget between the caller saying
             "I smell gas" and hearing what to do.
             """
             # The pipeline has decided the caller finished and is committing to
-            # a reply. Marking it here is what separates "still waiting to be
-            # sure you stopped talking" from "the model is thinking" -- two very
-            # different problems that, unmarked, both showed up as llm_ttft_ms
-            # and sent the last round of tuning at the wrong one.
+            # a reply. Marking it here separates "still waiting to be sure you
+            # stopped talking" from "the model is thinking". Marks keep their
+            # first timestamp, so the post-tool generation cannot move it.
             runtime.mark(Stage.ENDPOINT_COMMITTED)
 
             spoken = _last_user_text(chat_ctx)
@@ -90,44 +91,22 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                     yield script
                 return
 
-            upstream = super().llm_node(chat_ctx, tools, model_settings)
-            iterator = upstream.__aiter__()
-            pending: asyncio.Task[Any] | None = None
             first = True
-
-            try:
-                while True:
-                    if pending is None:
-                        pending = asyncio.ensure_future(iterator.__anext__())
-
-                    if first and soft_timeout > 0:
-                        done, _ = await asyncio.wait({pending}, timeout=soft_timeout)
-                        if not done:
-                            phrase = runtime.filler.soft_timeout_phrase()
-                            if phrase:
-                                runtime.annotate(soft_timeout_filler=True)
-                                runtime.record_agent(phrase)
-                                yield phrase
-
-                    try:
-                        chunk = await pending
-                    except StopAsyncIteration:
-                        return
-                    finally:
-                        pending = None
-
-                    if first:
-                        runtime.mark(Stage.LLM_FIRST_TOKEN)
-                        first = False
-                    yield chunk
-            finally:
-                if pending is not None:
-                    pending.cancel()
+            async for chunk in super().llm_node(chat_ctx, tools, model_settings):
+                if first:
+                    runtime.mark(Stage.LLM_FIRST_TOKEN)
+                    first = False
+                yield chunk
 
         async def tts_node(self, text: AsyncIterable[str], model_settings: Any) -> Any:
-            """Synthesize, marking the first frame from the vendor and out the door."""
+            """Synthesize, marking the first frame from the vendor and out the door.
+
+            Audio tags are removed on the way in. The prompt asks for them and the
+            voice model reads them out: "[slow] two-zero-three" was spoken as
+            "slow, two-zero-three". See :mod:`dana.agent.speech`.
+            """
             first = True
-            async for frame in super().tts_node(text, model_settings):
+            async for frame in super().tts_node(strip_audio_tags_stream(text), model_settings):
                 if first:
                     runtime.mark(Stage.TTS_FIRST_BYTE)
                     runtime.mark(Stage.AUDIO_OUT)

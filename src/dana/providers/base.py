@@ -213,40 +213,37 @@ class TTSConfig:
 
 @dataclass(frozen=True)
 class FillerConfig:
-    """Speech that covers a wait, so silence never has to.
+    """When a slow tool gets covered with speech, and in what words.
 
-    Two different waits need covering, and they are not the same wait:
-
-    * the model is slow to its first token (:attr:`soft_timeout_s`)
-    * a tool is out at the network (:attr:`pre_tool_threshold_s`)
-
-    Both are the platform's behaviour rebuilt here, including the detail that
-    fillers are suppressed until the caller has actually said something --
-    otherwise the agent mutters over its own greeting.
+    Tools only, never the model: see :mod:`dana.agent.filler` for the measured
+    reason a timer on the model put "One sec" after the answer on nearly every
+    turn.
     """
 
     enabled: bool = True
 
-    soft_timeout_s: float = 1.5
-    """Speak a filler if the model has produced nothing by now. -1 disables."""
+    tool_delay_s: float = 1.0
+    """How long the line must be continuously quiet -- agent not speaking or
+    thinking, caller not talking -- while a tool is still running before the
+    agent speaks into it. A tool that finishes sooner produces no filler at all.
+    About a second is where silence on a phone line starts to sound like a
+    dropped call rather than someone looking something up."""
 
-    soft_timeout_phrases: tuple[str, ...] = ("Let me see.", "One sec.", "Okay, checking.")
-    max_soft_timeouts_per_turn: int = 1
-    """The wait this covers should be rare, and twice it has not been.
+    max_per_turn: int = 1
+    """More than one filler in a caller's turn reads as a stall, not a person."""
 
-    A caller hears "One sec" before an answer that needed no covering, and the
-    cover phrase becomes the thing that needs covering. Measured turns put the
-    model's first token consistently under this, so what remains above it is a
-    genuine stall -- a tool out at the network, or a model having a bad
-    minute -- which is the only case worth speaking into."""
-    """More than one filler in a single turn reads as a stall, not a person."""
-
-    pre_tool_threshold_s: float = 0.4
-    """Speak before a tool call whose recent latency exceeds this. Mirrors the
-    platform's `pre_tool_speech: auto` -- decide from observed latency rather
-    than annotating every tool by hand."""
-
-    pre_tool_phrases: tuple[str, ...] = ("Let me check that.", "One moment.")
+    tool_phrases: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: {
+            "check_availability": ("Let me pull up the schedule.", "Let me see what's open."),
+            "lookup_customer": ("Let me look you up.", "Let me check our records."),
+            "book_appointment": ("Okay, getting that booked.", "Putting that in now."),
+            "take_message": ("Let me write that down.", "Getting that noted."),
+        }
+    )
+    """What to say while each tool runs, rotated so it is never the same line
+    twice running. A tool that is absent is never covered: `record_details`
+    runs on nearly every caller turn, and `dispatch_emergency` is no moment for
+    filler."""
 
     suppress_until_first_user_message: bool = True
     """No fillers before the caller has spoken."""

@@ -105,8 +105,11 @@ class TestConversationDiscipline:
         assert "never ask gas-or-electric about an air conditioner" in prompt
 
     def test_step_importance_markers_survive(self, prompt: str) -> None:
-        # 23 in the rendered demo prompt. Each marks a rule that failed once.
-        assert prompt.count("This step is important") == 23
+        # 23 ported from the original demo prompt, each marking a rule that
+        # failed once, plus one added here for a failure observed on this stack:
+        # the model announcing its own tool calls ("let me check if you've been
+        # in before"). A count below 24 means a ported rule was lost.
+        assert prompt.count("This step is important") == 24
 
 
 class TestTasteIsBounded:

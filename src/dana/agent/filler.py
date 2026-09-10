@@ -1,21 +1,39 @@
-"""Covering a wait with speech, so silence never has to.
+"""Covering a wait with speech -- only when there is a wait to cover.
 
-A person at a desk does not go quiet for two seconds while they look something
-up; they say "let me check that" and then go quiet. The platform ships this as
-two separate features -- a soft timeout on slow model responses, and pre-tool
-speech gated on observed tool latency -- and both are rebuilt here because the
-gap they cover is the most audible difference between a cascade and a person.
+A person at a desk does not say "one sec" before telling you their hours. They
+say it when they turn to the screen and the screen is slow. Getting that wrong
+in either direction is audible: silence through a slow lookup sounds like a
+dead line, and a filler in front of an instant answer sounds like a machine
+reading from a script.
 
-Two decisions in here are worth stating rather than discovering later:
+The previous design got it wrong in the second direction, and measurably. A
+timer on the model's first token spoke "One sec" whenever a generation was slow
+-- and the SDK starts a second generation after every tool call, which on this
+prompt almost always says nothing because the model already answered in the
+first. So the filler landed *after* the answer, on nearly every turn. It was
+also yielded into the model's own output stream, so it entered the chat history
+as something the agent had chosen to say.
 
-**An unknown tool is assumed slow.** The first call to a tool is the one most
-likely to be slow -- cold connection, cold cache, cold lambda -- and it is also
-the one with no latency history. Staying quiet through it is the worst available
-choice, so the default is to speak and then learn.
+What replaces it:
 
-**Fillers are suppressed until the caller has spoken.** Otherwise the agent
-mutters "one sec" over its own greeting, which reads as broken rather than
-thoughtful.
+**Fillers cover tools, never the model.** The model's first words arrive in
+about a second. What can genuinely stall is a lookup, and that is where a
+receptionist would speak.
+
+**They fire on measured idleness, not a guess.** The SDK's `with_filler` waits
+until the session has been continuously idle -- agent not speaking or thinking,
+caller not talking -- for a set time while the tool is still running. A tool
+that returns in a millisecond, which every tool here currently does, never
+produces a filler at all.
+
+**The words fit the moment.** "Let me pull up the schedule" before checking
+availability, not "one moment" before everything. Some tools are never covered:
+`record_details` runs on nearly every caller turn, and covering it would put the
+original problem straight back; `dispatch_emergency` is no moment for filler.
+
+**At most one per caller turn, never the same line twice running, and nothing
+before the caller has spoken** -- otherwise the agent mutters over its own
+greeting.
 """
 
 from __future__ import annotations
@@ -24,34 +42,29 @@ from dataclasses import dataclass, field
 
 from dana.providers.base import FillerConfig
 
-EWMA_ALPHA = 0.3
-"""Weight on the newest sample. High enough that a tool that just got slow is
-treated as slow, low enough that one outlier doesn't make the agent chatty."""
-
 
 @dataclass
 class FillerPolicy:
-    """Decides when the agent should say something to cover a wait.
+    """Decides whether, and in what words, to cover a slow tool.
 
-    One instance per call. Tool latency is learned within the call rather than
-    shared across calls: a tenant's endpoint being slow right now matters more
-    than what its average looked like yesterday.
+    One instance per call. The decision is taken at the moment a filler would
+    actually be spoken, not when the tool starts, so a filler that never fires
+    consumes nothing.
     """
 
     cfg: FillerConfig = field(default_factory=FillerConfig)
     heard_user: bool = False
-    _tool_latency_s: dict[str, float] = field(default_factory=dict)
-    _soft_used_this_turn: int = 0
-    _soft_idx: int = 0
-    _pre_tool_idx: int = 0
+    _spoken_this_turn: int = 0
+    _last_phrase: str | None = None
+    _next_index: dict[str, int] = field(default_factory=dict)
 
     def on_user_message(self) -> None:
         """The caller has said something. Fillers are unlocked from here."""
         self.heard_user = True
 
     def begin_turn(self) -> None:
-        """Reset per-turn state. More than one filler per turn reads as a stall."""
-        self._soft_used_this_turn = 0
+        """A new caller turn: its filler allowance starts over."""
+        self._spoken_this_turn = 0
 
     @property
     def _unlocked(self) -> bool:
@@ -59,58 +72,34 @@ class FillerPolicy:
             return False
         return self.heard_user or not self.cfg.suppress_until_first_user_message
 
-    def soft_timeout_phrase(self) -> str | None:
-        """A phrase to speak because the model is slow, or None to stay quiet.
+    def covers(self, tool_name: str) -> bool:
+        """Whether this tool may ever be covered with speech at all."""
+        return bool(self.cfg.tool_phrases.get(tool_name))
 
-        Consumes one of this turn's allowance, so calling it is the decision.
-        """
-        if not self._unlocked or self.cfg.soft_timeout_s < 0:
-            return None
-        if self._soft_used_this_turn >= self.cfg.max_soft_timeouts_per_turn:
-            return None
-        if not self.cfg.soft_timeout_phrases:
-            return None
-        self._soft_used_this_turn += 1
-        phrase = self.cfg.soft_timeout_phrases[self._soft_idx % len(self.cfg.soft_timeout_phrases)]
-        self._soft_idx += 1
-        return phrase
+    def tool_phrase(self, tool_name: str) -> str | None:
+        """Words to speak because `tool_name` is running slow, or None to stay quiet.
 
-    def should_speak_before_tool(self, tool_name: str) -> bool:
-        """Whether to cover this tool call with speech.
-
-        Mirrors the platform's `pre_tool_speech: auto` -- decided from observed
-        latency rather than annotated by hand on every tool, so a tool that
-        becomes slow in production starts getting covered without a redeploy.
+        Calling it is the decision: a returned phrase counts against this turn's
+        allowance. It is called by the SDK only once the line has actually gone
+        quiet, so a tool that finished first never reaches here.
         """
         if not self._unlocked:
-            return False
-        observed = self._tool_latency_s.get(tool_name)
-        if observed is None:
-            return True  # never seen it; assume the cold path is slow
-        return observed >= self.cfg.pre_tool_threshold_s
+            return None
+        if self._spoken_this_turn >= self.cfg.max_per_turn:
+            return None
+        phrases = self.cfg.tool_phrases.get(tool_name) or ()
+        if not phrases:
+            return None
 
-    def pre_tool_phrase(self) -> str:
-        """The next pre-tool phrase, rotated.
-
-        Rotation is deterministic rather than random: at temperature 0 the model
-        will not vary this for us, and hearing "let me check that" four times in
-        one booking is exactly the tell this whole module exists to remove.
-        """
-        phrases = self.cfg.pre_tool_phrases or ("One moment.",)
-        phrase = phrases[self._pre_tool_idx % len(phrases)]
-        self._pre_tool_idx += 1
-        return phrase
-
-    def observe_tool(self, tool_name: str, seconds: float) -> None:
-        """Fold a measured tool latency into the running estimate."""
-        previous = self._tool_latency_s.get(tool_name)
-        self._tool_latency_s[tool_name] = (
-            seconds if previous is None else EWMA_ALPHA * seconds + (1 - EWMA_ALPHA) * previous
-        )
-
-    def observed_latency(self, tool_name: str) -> float | None:
-        """Current estimate for a tool, for the trace annotation."""
-        return self._tool_latency_s.get(tool_name)
+        start = self._next_index.get(tool_name, 0)
+        for offset in range(len(phrases)):
+            candidate = phrases[(start + offset) % len(phrases)]
+            if candidate != self._last_phrase or len(phrases) == 1:
+                self._next_index[tool_name] = start + offset + 1
+                self._last_phrase = candidate
+                self._spoken_this_turn += 1
+                return candidate
+        return None
 
 
 @dataclass

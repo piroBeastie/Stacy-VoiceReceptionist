@@ -112,64 +112,71 @@ class TestPromptAndTranscript:
 
 
 class TestFillerPolicy:
-    def test_nothing_before_the_caller_speaks(self) -> None:
-        # Otherwise the agent mutters "one sec" over its own greeting.
-        p = FillerPolicy()
-        assert p.soft_timeout_phrase() is None
-        assert p.should_speak_before_tool("book_appointment") is False
+    """Fillers cover slow tools, in words that fit, and only when it is needed.
 
-    def test_unlocked_once_the_caller_speaks(self) -> None:
-        p = FillerPolicy()
-        p.on_user_message()
-        assert p.soft_timeout_phrase() is not None
+    Measured before this redesign: a timer on the model's first token fired
+    "One sec" on the second generation the SDK runs after every tool call -- a
+    generation that almost always said nothing, because the model had already
+    answered. So the filler arrived after the answer, on nearly every turn.
+    """
 
-    def test_one_filler_per_turn(self) -> None:
-        p = FillerPolicy()
+    def _policy(self, **cfg) -> FillerPolicy:
+        p = FillerPolicy(cfg=FillerConfig(**cfg))
         p.on_user_message()
-        assert p.soft_timeout_phrase() is not None
-        assert p.soft_timeout_phrase() is None
         p.begin_turn()
-        assert p.soft_timeout_phrase() is not None
+        return p
 
-    def test_phrases_rotate_rather_than_repeat(self) -> None:
-        # At temperature 0 the model will not vary this for us.
-        p = FillerPolicy()
-        p.on_user_message()
+    def test_nothing_before_the_caller_speaks(self) -> None:
+        # Otherwise the agent mutters over its own greeting.
+        assert FillerPolicy().tool_phrase("check_availability") is None
+
+    def test_a_slow_lookup_gets_words_that_fit_it(self) -> None:
+        # "Let me pull up the schedule", not a generic "one moment".
+        phrase = self._policy().tool_phrase("check_availability")
+        assert phrase in FillerConfig().tool_phrases["check_availability"]
+        assert "one sec" not in phrase.lower()
+
+    def test_record_details_is_never_covered(self) -> None:
+        # It runs on nearly every caller turn. Covering it would put a filler
+        # back on nearly every turn, which is the bug being removed.
+        p = self._policy()
+        assert p.covers("record_details") is False
+        assert p.tool_phrase("record_details") is None
+
+    def test_an_emergency_dispatch_is_never_covered(self) -> None:
+        p = self._policy()
+        assert p.covers("dispatch_emergency") is False
+        assert p.tool_phrase("dispatch_emergency") is None
+
+    def test_one_filler_per_caller_turn(self) -> None:
+        p = self._policy()
+        assert p.tool_phrase("check_availability") is not None
+        assert p.tool_phrase("book_appointment") is None
+        p.begin_turn()
+        assert p.tool_phrase("book_appointment") is not None
+
+    def test_never_the_same_line_twice_running(self) -> None:
+        p = self._policy()
         heard = []
-        for _ in range(3):
+        for _ in range(4):
             p.begin_turn()
-            heard.append(p.soft_timeout_phrase())
-        assert len(set(heard)) == 3
+            heard.append(p.tool_phrase("check_availability"))
+        assert all(a != b for a, b in zip(heard, heard[1:]))
 
-    def test_an_unseen_tool_is_assumed_slow(self) -> None:
-        # The first call is the cold one; staying quiet through it is the worst
-        # available choice.
-        p = FillerPolicy()
-        p.on_user_message()
-        assert p.should_speak_before_tool("check_availability") is True
-
-    def test_a_tool_learned_to_be_fast_stops_being_covered(self) -> None:
-        p = FillerPolicy()
-        p.on_user_message()
-        for _ in range(8):
-            p.observe_tool("check_availability", 0.01)
-        assert p.should_speak_before_tool("check_availability") is False
-
-    def test_a_tool_that_turns_slow_starts_being_covered(self) -> None:
-        p = FillerPolicy()
-        p.on_user_message()
-        for _ in range(8):
-            p.observe_tool("book_appointment", 0.01)
-        assert p.should_speak_before_tool("book_appointment") is False
-        for _ in range(8):
-            p.observe_tool("book_appointment", 2.0)
-        assert p.should_speak_before_tool("book_appointment") is True
+    def test_asking_whether_a_tool_is_covered_consumes_nothing(self) -> None:
+        # The phrase is chosen when the idle dwell expires. A tool that finished
+        # first never asked, so the turn's allowance is untouched.
+        p = self._policy()
+        assert p.covers("check_availability") is True
+        assert p.tool_phrase("book_appointment") is not None
 
     def test_disabling_the_policy_silences_everything(self) -> None:
-        p = FillerPolicy(cfg=FillerConfig(enabled=False))
-        p.on_user_message()
-        assert p.soft_timeout_phrase() is None
-        assert p.should_speak_before_tool("anything") is False
+        assert self._policy(enabled=False).tool_phrase("check_availability") is None
+
+    def test_there_is_no_timer_on_the_model(self) -> None:
+        # The model is never covered. If a soft timeout comes back onto the
+        # config, this is where it gets noticed and has to be argued for.
+        assert not [f for f in FillerConfig.__dataclass_fields__ if "soft_timeout" in f]
 
 
 class TestRepetitionTracker:

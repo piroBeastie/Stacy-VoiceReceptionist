@@ -19,12 +19,23 @@ talking to a machine.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable
 
 from dana.agent.runtime import CallRuntime
 from dana.agent.slots import spoken_digits
 from dana.desk.calendar import BookingError, SlotUnavailable, UnknownWindow, resolve_day
+
+try:
+    # At module scope on purpose. The SDK resolves tool annotations with
+    # get_type_hints, which looks names up in this module's globals -- and every
+    # annotation here is a string, because of `from __future__ import annotations`.
+    # Imported inside build_function_tools, `ctx: RunContext` would not resolve,
+    # and the failure would surface as a crash when a call starts.
+    from livekit.agents import RunContext
+except ImportError:  # the desk logic and its tests do not need the SDK
+    RunContext = Any  # type: ignore[assignment,misc]
 
 log = logging.getLogger("dana.agent.tools")
 
@@ -316,51 +327,71 @@ def _said(value: str | None) -> str:
 def build_function_tools(ops: DeskOperations) -> list[Any]:
     """Wrap :class:`DeskOperations` as livekit function tools.
 
-    Imported lazily and kept mechanical: no behaviour lives in here, so the
-    tests that matter never need the SDK installed.
+    Imported lazily and kept mechanical: the desk logic lives in
+    :class:`DeskOperations`, so the tests that matter never need the SDK.
 
-    Each wrapper times its own call and feeds the result to the filler policy,
-    which is how `pre_tool_speech: auto` learns which tools are slow without
-    anyone annotating them.
+    What does live here is how a tool call *feels* on the phone. Every operation
+    runs off the event loop, one at a time, and a slow one is covered with a
+    line that fits it -- but only once the line has actually gone quiet. See
+    :mod:`dana.agent.filler` for why the model itself is never covered.
     """
     import time  # noqa: PLC0415
 
     from livekit.agents import function_tool  # noqa: PLC0415
 
     filler = ops.runtime.filler
+    delay = ops.runtime.pipeline.filler.tool_delay_s
+    one_at_a_time = asyncio.Lock()
 
-    def timed(name: str, fn: Callable[..., str]) -> Callable[..., str]:
-        def wrapper(*args: Any, **kwargs: Any) -> str:
+    async def run(ctx: Any, name: str, fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
+        """Run a desk operation off the event loop, covering it only if it is slow.
+
+        Off the loop, because the desk reads and appends files, and the SDK has
+        already measured what synchronous work on the agent loop costs: audio
+        and turn handling stall behind it. One at a time, because operations
+        share this call's booking state and the model can ask for several at
+        once.
+
+        The filler source is a callable, so whether to speak -- and what -- is
+        decided when the idle dwell actually expires. A tool that finishes
+        first never asks, and consumes nothing.
+        """
+
+        def work() -> str:
             start = time.perf_counter()
             try:
                 return fn(*args, **kwargs)
             finally:
-                elapsed = time.perf_counter() - start
-                filler.observe_tool(name, elapsed)
-                ops.runtime.annotate(**{f"tool_{name}_ms": round(elapsed * 1000, 2)})
+                elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+                ops.runtime.annotate(**{f"tool_{name}_ms": elapsed_ms})
 
-        return wrapper
+        async with one_at_a_time:
+            if not filler.covers(name):
+                return await asyncio.to_thread(work)
+            async with ctx.with_filler(lambda _step: filler.tool_phrase(name), delay=delay):
+                return await asyncio.to_thread(work)
 
     @function_tool
-    async def check_availability(day: str) -> str:
+    async def check_availability(ctx: RunContext, day: str) -> str:
         """Check which arrival windows are open on a given day.
 
         Args:
             day: The day the caller named, e.g. "today", "tomorrow", "Thursday".
         """
-        return timed("check_availability", ops.check_availability)(day)
+        return await run(ctx, "check_availability", ops.check_availability, day)
 
     @function_tool
-    async def lookup_customer(phone: str | None = None) -> str:
+    async def lookup_customer(ctx: RunContext, phone: str | None = None) -> str:
         """Look up whether this caller has been a customer before.
 
         Args:
             phone: Their number, or null to use the number they called from.
         """
-        return timed("lookup_customer", ops.lookup_customer)(_said(phone))
+        return await run(ctx, "lookup_customer", ops.lookup_customer, _said(phone))
 
     @function_tool
     async def record_details(
+        ctx: RunContext,
         customer_name: str | None = None,
         phone: str | None = None,
         street_address: str | None = None,
@@ -391,7 +422,10 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
             sms_consent: True only if they said yes to the text consent question,
                 null if it has not been asked.
         """
-        return timed("record_details", ops.record_details)(
+        return await run(
+            ctx,
+            "record_details",
+            ops.record_details,
             customer_name=_said(customer_name),
             phone=_said(phone),
             street_address=_said(street_address),
@@ -405,28 +439,28 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
         )
 
     @function_tool
-    async def book_appointment() -> str:
+    async def book_appointment(ctx: RunContext) -> str:
         """Commit the booking, after you have read the details back and they confirmed.
 
         Takes no arguments -- it books exactly what `record_details` recorded,
         which is what you read back. If anything is still missing it tells you
         what, and nothing is booked.
         """
-        return timed("book_appointment", ops.book_appointment)()
+        return await run(ctx, "book_appointment", ops.book_appointment)
 
     @function_tool
-    async def dispatch_emergency() -> str:
+    async def dispatch_emergency(ctx: RunContext) -> str:
         """Send the on-call technician now, for an emergency under the policy.
 
         Takes no arguments, like `book_appointment`. Record the name, number,
         street address, town and problem with `record_details` first; this tells
         you if any of them is still missing.
         """
-        return timed("dispatch_emergency", ops.dispatch_emergency)()
+        return await run(ctx, "dispatch_emergency", ops.dispatch_emergency)
 
     @function_tool
     async def take_message(
-        caller_name: str, phone: str, summary: str, for_staff: str | None = None
+        ctx: RunContext, caller_name: str, phone: str, summary: str, for_staff: str | None = None
     ) -> str:
         """Take a message for a person at the business.
 
@@ -436,8 +470,14 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
             summary: One line on what they want.
             for_staff: The person they asked for, or null if they named nobody.
         """
-        return timed("take_message", ops.take_message)(
-            caller_name=caller_name, phone=phone, summary=summary, for_staff=for_staff
+        return await run(
+            ctx,
+            "take_message",
+            ops.take_message,
+            caller_name=caller_name,
+            phone=phone,
+            summary=summary,
+            for_staff=for_staff,
         )
 
     return [
