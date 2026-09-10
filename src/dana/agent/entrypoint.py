@@ -32,12 +32,14 @@ import asyncio
 import logging
 import os
 import re
+import time
 from typing import Any
 
 from dana.agent import greeting
 from dana.agent.nodes import build_agent
 from dana.agent.runtime import CallRuntime
 from dana.agent.tools import DeskOperations
+from dana.agent.turns import NoiseHeldTurnGuard
 from dana.delivery import CallArchive, LoggingProvider, SmsSender, WebhookSender
 from dana.delivery.sms import ConsentMissing
 from dana.desk import CalendarStore, MessageStore
@@ -216,8 +218,11 @@ async def entrypoint(ctx: Any) -> None:
     session = AgentSession(**supported(AgentSession, session_kwargs))
 
     ops = DeskOperations(runtime)
-    _wire(session, runtime)
-    watchdog = asyncio.ensure_future(_silence_watchdog(session, runtime))
+    # Words, not audio, decide whether a noisy line is the caller or the room;
+    # see dana.agent.turns.
+    guard = NoiseHeldTurnGuard(commit_after_s=cfg.turn.noise_commit_after_s)
+    _wire(session, runtime, guard)
+    watchdog = asyncio.ensure_future(_silence_watchdog(session, runtime, guard))
     ctx.add_shutdown_callback(lambda: _on_shutdown(runtime, watchdog))
 
     await session.start(
@@ -254,35 +259,88 @@ async def entrypoint(ctx: Any) -> None:
     if audio is not None:
         say_kwargs["audio"] = audio
 
+    # Not recorded here as well: conversation_item_added records it, and doing
+    # both counted a repeated line on every call before the caller spoke.
     await session.say(runtime.tenant.greeting, **supported(session.say, say_kwargs))
-    runtime.record_agent(runtime.tenant.greeting)
 
 
-def _wire(session: Any, runtime: CallRuntime) -> None:
-    """Attach conversation bookkeeping to session events.
+def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard) -> None:
+    """Attach conversation bookkeeping, and the events that explain a bad call.
 
     Only events that carry information the pipeline nodes cannot see are
     handled here. Timing is not among them.
+
+    The logging is diagnostic, and specific. When a caller reports that the
+    agent did not speak, there are three different ways that happens, with
+    opposite fixes: noise interrupting the agent (an overlap judged to be an
+    interruption, or a reply marked cut off), noise holding the caller's turn
+    open (a stretch of "speech" with no words in it), and the input filter
+    removing the caller (turns with no transcript at all). Each leaves a line.
     """
+    state: dict[str, float | int] = {}
 
     @session.on("user_state_changed")  # type: ignore[attr-defined]
     def _on_user_state(ev: Any) -> None:
-        if getattr(ev, "new_state", None) == "listening":
+        new = getattr(ev, "new_state", None)
+        now = time.monotonic()
+        if new == "speaking":
+            state["speaking_since"] = now
+            state["words"] = 0
+        elif getattr(ev, "old_state", None) == "speaking" and "speaking_since" in state:
+            held = now - float(state.pop("speaking_since"))
+            if held >= 1.5 and not state.get("words"):
+                log.info(
+                    "call %s: %.1fs of speech with no words in it -- the room, not the caller",
+                    runtime.call_id,
+                    held,
+                )
+        if new == "listening":
             runtime.begin_turn()
 
     @session.on("user_input_transcribed")  # type: ignore[attr-defined]
     def _on_transcript(ev: Any) -> None:
         text = getattr(ev, "transcript", "") or ""
-        if getattr(ev, "is_final", False):
+        final = bool(getattr(ev, "is_final", False))
+        if text.strip():
+            state["words"] = int(state.get("words", 0)) + 1
+            guard.on_words(time.monotonic(), text=text, final=final)
+        if final:
             runtime.record_user(text)
+
+    @session.on("agent_state_changed")  # type: ignore[attr-defined]
+    def _on_agent_state(ev: Any) -> None:
+        if getattr(ev, "new_state", None) in ("thinking", "speaking"):
+            guard.on_agent_reply()
 
     @session.on("conversation_item_added")  # type: ignore[attr-defined]
     def _on_item(ev: Any) -> None:
         item = getattr(ev, "item", None)
-        if getattr(item, "role", None) == "assistant":
-            text = getattr(item, "text_content", None) or ""
-            if text:
-                runtime.record_agent(text)
+        if getattr(item, "role", None) != "assistant":
+            return
+        text = getattr(item, "text_content", None) or ""
+        if not text:
+            return
+        runtime.record_agent(text)
+        cut = " (CUT OFF)" if getattr(item, "interrupted", False) else ""
+        log.info("said %s%s: %r", runtime.call_id, cut, " ".join(text.split())[:160])
+
+    @session.on("overlapping_speech")  # type: ignore[attr-defined]
+    def _on_overlap(ev: Any) -> None:
+        log.info(
+            "call %s: caller audio over the agent -- interruption=%s p=%.2f over %.2fs",
+            runtime.call_id,
+            getattr(ev, "is_interruption", None),
+            float(getattr(ev, "probability", 0.0) or 0.0),
+            float(getattr(ev, "total_duration", 0.0) or 0.0),
+        )
+
+    @session.on("agent_false_interruption")  # type: ignore[attr-defined]
+    def _on_false_interruption(ev: Any) -> None:
+        log.info(
+            "call %s: false interruption -- agent %s",
+            runtime.call_id,
+            "resumed" if getattr(ev, "resumed", False) else "did not resume",
+        )
 
     @session.on("close")  # type: ignore[attr-defined]
     def _on_close(_ev: Any) -> None:
@@ -295,13 +353,31 @@ initializing | idle | listening | thinking | speaking, and only the last two
 mean nobody is doing anything."""
 
 
-async def _silence_watchdog(session: Any, runtime: CallRuntime) -> None:
-    """Re-engage a quiet line, then close it.
+def _log_commit_failure(fut: Any) -> None:
+    """Surface a failed turn commit without letting it end the call."""
+    if fut.cancelled():
+        return
+    exc = fut.exception()
+    if exc is not None:
+        log.warning("committing a noise-held turn failed: %s", exc)
+
+
+async def _silence_watchdog(
+    session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard | None = None
+) -> None:
+    """Re-engage a quiet line, close an abandoned one, and answer through noise.
 
     The prompt says "if the line goes quiet mid-call, ask once, 'Still there?'"
     -- an instruction the agent could not follow, because a silent caller never
-    produces a turn in which to follow it. `turn_timeout_s` and
-    `silence_end_call_s` were config fields nothing read.
+    produces a turn in which to follow it.
+
+    Two things decide what counts as quiet, and both were wrong once. The agent
+    thinking or speaking is not silence. And the caller "speaking" is only the
+    caller if words are arriving: background noise holds voice detection on
+    indefinitely, which both kept this timer from ever firing and kept a
+    finished turn from ever ending. When a transcript is waiting and only the
+    noise is still "talking", the turn is committed so the agent answers what
+    was said. See :mod:`dana.agent.turns`.
     """
     turn_timeout = runtime.pipeline.turn.turn_timeout_s
     end_after = runtime.pipeline.turn.silence_end_call_s
@@ -314,14 +390,33 @@ async def _silence_watchdog(session: Any, runtime: CallRuntime) -> None:
     try:
         while True:
             await asyncio.sleep(tick)
-            # "thinking" and "initializing" are the agent working, not the line
-            # going quiet. Counting them meant a slow turn walked its own way
-            # into "Still there?" -- the agent interrupting its own pause to ask
-            # the caller whether they were still on the phone.
-            if getattr(session, "agent_state", None) in _AGENT_BUSY:
+            now = time.monotonic()
+            agent_state = getattr(session, "agent_state", None)
+            user_state = getattr(session, "user_state", None)
+
+            if guard is not None and guard.should_commit(
+                now, user_state=user_state, agent_state=agent_state
+            ):
+                guard.mark_committed()
+                log.info(
+                    "call %s: noise held the turn open %.1fs after the last word -- answering",
+                    runtime.call_id,
+                    now - (guard.last_words_at or now),
+                )
+                try:
+                    fut = session.commit_user_turn(transcript_timeout=1.0, stt_flush_duration=0.5)
+                    if hasattr(fut, "add_done_callback"):
+                        fut.add_done_callback(_log_commit_failure)
+                except Exception:  # noqa: BLE001 - a failed commit must not end the call
+                    log.exception("call %s: could not commit the noise-held turn", runtime.call_id)
+
+            if agent_state in _AGENT_BUSY:
                 quiet_for, asked = 0.0, False
                 continue
-            if getattr(session, "user_state", None) == "speaking":
+            caller_talking = user_state == "speaking" and (
+                guard is None or guard.heard_words_within(now, 2.0)
+            )
+            if caller_talking:
                 quiet_for, asked = 0.0, False
                 continue
             quiet_for += tick

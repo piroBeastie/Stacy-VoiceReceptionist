@@ -355,6 +355,17 @@ class TurnConfig:
     """Keep transcribing speech that is not allowed to interrupt, so it carries
     into the next turn instead of being discarded."""
 
+    noise_commit_after_s: float = 2.0
+    """Answer anyway once background noise is what holds the caller's turn open.
+
+    A final transcript ends a turn only when voice detection says the caller has
+    stopped, and Silero releases speech only below its deactivation threshold --
+    0.45 at an activation of 0.6. Noise above that keeps "speaking" true, so a
+    caller who had finished was never answered. Speech produces words and noise
+    does not: this long after the last transcribed word, with a transcript still
+    waiting, the turn is committed. It sits under the semantic detector's own
+    worst-case wait, so a noisy line is never slower than a quiet one would be."""
+
     turn_timeout_s: float = 9.0
     """Silence before the agent re-engages. The prompt tells it to ask 'Still
     there?'; without a timer it never gets the turn in which to do so."""

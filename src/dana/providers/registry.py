@@ -243,6 +243,9 @@ def warm_imports() -> None:
         "httpx",
         "anthropic",
         "aiohttp",
+        # A live call measured 502ms of event loop blocked importing this,
+        # at the moment the caller was waiting for the greeting.
+        "tqdm.utils",
     ):
         try:
             importlib.import_module(module)
