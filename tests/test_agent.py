@@ -235,7 +235,7 @@ class TestDeskOperations:
         for i in range(tenant.capacity_per_window):
             ops.book_appointment(
                 customer_name=f"C{i}",
-                phone="+1203555010{i}",
+                phone=f"+1203555010{i}",
                 street_address="1 Main Street",
                 town="Wallingford",
                 problem="tune up",
@@ -389,6 +389,257 @@ class TestRouting:
         monkeypatch.setenv("STACY_DEFAULT_TENANT", "millbrook")
         with pytest.raises(KeyError):
             _route(store, "+15550000000")
+
+    def test_a_stale_tenant_path_is_an_error_not_an_empty_store(self, tmp_path) -> None:
+        # The rename left STACY_TENANT_DIR on src/dana/tenants/data. Globbing a
+        # missing folder finds nothing, so the store loaded empty and every
+        # call rang out with no error until one was dialed.
+        from stacy.tenants import TenantStore
+
+        with pytest.raises(FileNotFoundError, match="dana"):
+            TenantStore(tmp_path / "src" / "dana" / "tenants" / "data")
+
+    def test_an_unrouted_number_says_where_it_looked(self, store) -> None:
+        with pytest.raises(KeyError, match=r"number\(s\) loaded from"):
+            store.for_number("+15550000000")
+
+    def test_a_worker_with_no_tenants_refuses_to_start(self, tmp_path, monkeypatch) -> None:
+        from stacy.agent.entrypoint import _require_tenants
+
+        monkeypatch.setenv("STACY_TENANT_DIR", str(tmp_path / "missing"))
+        with pytest.raises(SystemExit, match="STACY_TENANT_DIR"):
+            _require_tenants()
+
+        monkeypatch.setenv("STACY_TENANT_DIR", str(tmp_path))  # exists, but empty
+        with pytest.raises(SystemExit, match="ring out"):
+            _require_tenants()
+
+    def test_the_shipped_tenants_are_enough_to_start(self, monkeypatch) -> None:
+        from stacy.agent.entrypoint import _require_tenants
+
+        monkeypatch.delenv("STACY_TENANT_DIR", raising=False)
+        assert _require_tenants() >= 1
+
+
+class TestTheCallBriefing:
+    """Known before the phone rings, so no round trip has to fetch it."""
+
+    def test_the_instructions_are_identical_across_calls(self, tenant, tmp_path, monday_9am) -> None:
+        def build(caller: str) -> CallRuntime:
+            return CallRuntime.build(tenant=tenant, call_id="c", caller_id=caller, now=monday_9am)
+
+        a, b = build("+12035550147"), build("+919988444520")
+        assert a.instructions == b.instructions, "anything per-call in here breaks cross-call caching"
+        assert "+12035550147" not in a.instructions
+        assert "+12035550147" in a.call_section
+
+    def test_a_new_caller_gets_their_number_read_back_and_the_open_windows(
+        self, runtime: CallRuntime
+    ) -> None:
+        briefing = DeskOperations(runtime).call_briefing()
+        assert "not said aloud" in briefing
+        assert "No record on this number" in briefing
+        assert "two-zero-three, five-five-five, zero-one-four-seven" in briefing
+        assert runtime.slots.phone == "", "offered for the caller to confirm, not saved behind their back"
+        # Monday 9am: all three windows today, and tomorrow is a Tuesday.
+        assert "Today: eight to eleven, eleven to two, or two to five." in briefing
+        assert "Tomorrow (Tuesday): eight to eleven" in briefing
+
+    def test_a_friday_briefing_says_saturday_has_nothing(self, tenant, tmp_path) -> None:
+        friday = datetime(2026, 9, 11, 10, 30, tzinfo=ZoneInfo(tenant.timezone))
+        rt = CallRuntime.build(
+            tenant=tenant,
+            call_id="fri",
+            caller_id="Restricted",
+            calendar=CalendarStore(tmp_path / "cal"),
+            messages=MessageStore(tmp_path / "msg"),
+            now=friday,
+        )
+        briefing = DeskOperations(rt).call_briefing()
+        assert "Tomorrow (Saturday): nothing open." in briefing
+        assert "Next open after that: Monday" in briefing
+        assert "ask for their number" in briefing
+        assert rt.slots.phone == ""
+
+
+class TestAWindowIsCheckedWhenItIsRecorded:
+    """Reported live: "tomorrow, eleven to two", said on a Friday, was read back,
+    confirmed, and only then refused as "just filled up" -- twice. Saturday runs
+    nine to one; nothing was ever bookable. The clock here is Monday 9am."""
+
+    def test_a_window_the_office_never_runs_is_refused_on_the_spot(
+        self, runtime: CallRuntime
+    ) -> None:
+        said = DeskOperations(runtime).record_details(day="Saturday", window="eleven to two")
+        assert "On Saturday we're only open nine to one, so there's no eleven to two." in said
+        assert "just filled" not in said
+        assert "Read it back" not in said
+        assert (runtime.slots.day, runtime.slots.window) == ("", "")
+        assert "The soonest I've got is today" in said
+
+    def test_a_closed_day_is_refused_before_a_window_is_picked(self, runtime: CallRuntime) -> None:
+        said = DeskOperations(runtime).record_details(day="Sunday")
+        assert "We're closed on Sunday." in said
+        assert runtime.slots.day == ""
+
+    def test_a_bookable_window_goes_straight_through(self, runtime: CallRuntime) -> None:
+        said = DeskOperations(runtime).record_details(
+            customer_name="Dan",
+            phone="2035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="no heat",
+            day="tomorrow",
+            window="eight to eleven",
+        )
+        assert "That's everything" in said
+
+    def test_a_refused_booking_names_the_real_reason_and_clears_the_window(
+        self, runtime: CallRuntime
+    ) -> None:
+        runtime.slots.update(
+            customer_name="Dan",
+            phone="+12035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="no heat",
+            day="Saturday",
+            window="two to five",
+        )
+        said = DeskOperations(runtime).book_appointment()
+        assert "just filled" not in said
+        assert "On Saturday we're only open nine to one, so there's no two to five." in said
+        assert runtime.slots.window == ""
+
+    def test_availability_says_today_and_tomorrow_not_a_weekday(self, runtime: CallRuntime) -> None:
+        assert DeskOperations(runtime).check_availability("tomorrow").startswith("Tomorrow I've got")
+
+
+class TestNothingIsBookedBeforeTheCallerHearsItBack:
+    """Replayed: the read-back and the booking went out in the same breath, before a yes."""
+
+    def _ready(self, runtime: CallRuntime) -> None:
+        runtime.slots.update(
+            customer_name="Dan",
+            phone="+12035550147",
+            street_address="14 Elm Street",
+            town="Wallingford",
+            problem="no heat",
+            day="tomorrow",
+            window="eleven to two",
+        )
+        runtime.record_agent("Millbrook Heating and Cooling, this is Casey. What can I help with?")
+
+    def test_a_read_back_the_caller_said_yes_to_books(self, runtime: CallRuntime) -> None:
+        self._ready(runtime)
+        runtime.record_agent(
+            "Let me read this back: Dan, 14 Elm Street in Wallingford, no heat, "
+            "tomorrow between eleven and two. That all right?"
+        )
+        runtime.record_user("Yes, that's right.")
+        assert DeskOperations(runtime).book_appointment().startswith("Booked")
+
+    def test_a_clarification_between_the_read_back_and_the_yes_still_books(
+        self, runtime: CallRuntime
+    ) -> None:
+        # The live call: garbled yes, "say that once more", clear yes -- refused, then
+        # the agent told the caller they were all set with nothing booked.
+        self._ready(runtime)
+        runtime.record_agent(
+            "Perfect. Let me read that back: Dan, 14 Elm Street in Wallingford, no heat, "
+            "tomorrow between eleven and two. Does that sound right?"
+        )
+        runtime.record_user("Yeah. That'd be not something.")
+        runtime.record_agent("Sorry, say that once more for me?")
+        runtime.record_user("Yes. That's exactly how I like it.")
+        assert DeskOperations(runtime).book_appointment().startswith("Booked")
+
+    def test_a_read_back_of_a_window_since_changed_does_not_count(
+        self, runtime: CallRuntime
+    ) -> None:
+        self._ready(runtime)
+        runtime.record_agent(
+            "Let me read this back: Dan, 14 Elm Street in Wallingford, no heat, "
+            "tomorrow between eleven and two. That all right?"
+        )
+        runtime.record_user("Actually make it two to five.")
+        runtime.slots.update(window="two to five")
+        runtime.record_agent("Sure, two to five works.")
+        runtime.record_user("Great.")
+        said = DeskOperations(runtime).book_appointment()
+        assert said.startswith("Not yet: read it all back")
+        assert "Nothing is booked yet" in said
+
+    def test_a_yes_to_something_else_books_nothing(self, runtime: CallRuntime) -> None:
+        self._ready(runtime)
+        runtime.record_agent("We'll text you a confirmation. Is it okay if we text that number?")
+        runtime.record_user("Yeah, perfect.")
+        said = DeskOperations(runtime).book_appointment()
+        assert said.startswith("Not yet: read it all back")
+        assert runtime.outcome == "answered"
+
+
+class TestKeepWarm:
+    """A ping that keeps the worker awake must never behave like a call."""
+
+    def test_a_keep_warm_room_is_never_joined(self) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from stacy.agent.entrypoint import entrypoint
+
+        class Ctx:
+            job = SimpleNamespace(room=SimpleNamespace(name="keepwarm-1789200000"))
+
+            async def connect(self) -> None:
+                raise AssertionError("joined a keep-warm room")
+
+        asyncio.run(entrypoint(Ctx()))
+
+
+class TestAStreetAlreadySaid:
+    """Reported live: the street given with the town was asked for again later."""
+
+    def test_the_gap_points_at_the_line_that_filled_it(self, runtime: CallRuntime) -> None:
+        runtime.record_user("I'm in Coffey Street 1 2 3, Wallingford.")
+        reply = DeskOperations(runtime).record_details(town="Wallingford")
+        assert "Still need" in reply
+        assert "Coffey Street 1 2 3" in reply
+        assert "instead of asking again" in reply
+
+    def test_no_hint_when_nothing_street_like_was_said(self, runtime: CallRuntime) -> None:
+        runtime.record_user("My furnace is making a noise.")
+        reply = DeskOperations(runtime).record_details(problem="furnace noise")
+        assert "may already have given" not in reply
+
+    def test_no_hint_once_the_street_is_recorded(self, runtime: CallRuntime) -> None:
+        runtime.record_user("It's 14 Elm Street in Wallingford.")
+        reply = DeskOperations(runtime).record_details(street_address="14 Elm Street", town="Wallingford")
+        assert "may already have given" not in reply
+
+
+class TestToolCallLog:
+    """What the model passed to a tool, visible in a production log."""
+
+    def test_the_line_shows_what_was_passed_and_what_came_back(self) -> None:
+        from stacy.agent.tools import _describe_call
+
+        line = _describe_call(
+            "record_details",
+            (),
+            {"street_address": "123 Coffey Street", "town": "", "phone": None, "sms_consent": False},
+            "Recorded street_address. Still need the town.",
+            3.4,
+        )
+        assert "street_address='123 Coffey Street'" in line
+        assert "town=" not in line and "phone=" not in line
+        assert "sms_consent=False" in line, "a declined consent is an answer, not an absence"
+        assert "Still need the town." in line
+
+    def test_a_long_reply_is_trimmed(self) -> None:
+        from stacy.agent.tools import _describe_call
+
+        assert len(_describe_call("check_availability", ("tomorrow",), {}, "x" * 1000, 1.0)) < 300
 
 
 class TestSafetyOverrideAtRuntime:

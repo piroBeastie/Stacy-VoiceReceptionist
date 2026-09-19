@@ -14,10 +14,11 @@ ring and the agent saying anything. They are loaded once per worker process in
 :func:`prewarm` now, along with the tenant store, which was also being re-read
 and re-validated on every single call.
 
-**Timing.** Stage marks were derived from the session's `metrics_collected`
-event, which reports durations after the fact and fires after the turn had
-already been emitted. They are taken inside the pipeline nodes instead -- see
-:mod:`stacy.agent.nodes`.
+**Timing.** Caller-heard latency comes from the SDK's timestamps on each
+conversation item, logged once per reply and summarised once per call -- see
+:mod:`stacy.metrics.live`. The stage marks in :mod:`stacy.agent.nodes` still
+feed the JSONL trace, but they start late and mislabel tool time; do not read
+latency from them.
 
 VERIFY AGAINST THE INSTALLED SDK before the first live call. The shape below
 (AgentSession keyword arguments, event names, participant attribute keys for the
@@ -29,6 +30,7 @@ constructors; the session arguments here are guarded the same way.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -44,6 +46,7 @@ from stacy.delivery import CallArchive, LoggingProvider, SmsSender, WebhookSende
 from stacy.delivery.sms import ConsentMissing
 from stacy.desk import CalendarStore, MessageStore
 from stacy.metrics import JsonlSink
+from stacy.metrics.live import format_reply
 from stacy.providers.base import PipelineConfig
 from stacy.providers.registry import (
     build_llm,
@@ -55,6 +58,8 @@ from stacy.providers.registry import (
     prewarm as prewarm_models,
     register_plugins,
     supported,
+    turn_handling,
+    llm_conn_options,
 )
 from stacy.tenants import TenantStore
 
@@ -66,6 +71,16 @@ SIP_DIALED_ATTR = "sip.trunkPhoneNumber"
 SIP_CALLER_ATTR = "sip.phoneNumber"
 """Participant attribute holding the caller's own number, for {{system__caller_id}}."""
 
+DEFAULT_TENANT_DIR = "src/stacy/tenants/data"
+
+KEEP_WARM_PREFIX = "keepwarm-"
+"""Rooms that exist only to keep the worker awake; see scripts/keep_warm.py."""
+
+
+def _tenant_dir() -> str:
+    """Where tenant records are read from. `STACY_TENANT_DIR` overrides it."""
+    return os.getenv("STACY_TENANT_DIR", DEFAULT_TENANT_DIR)
+
 
 def prewarm(proc: Any) -> None:
     """Load everything reusable once per worker process.
@@ -76,18 +91,14 @@ def prewarm(proc: Any) -> None:
     """
     prewarm_models(proc.userdata)
     try:
-        proc.userdata["tenants"] = TenantStore(
-            os.getenv("STACY_TENANT_DIR", "src/stacy/tenants/data")
-        )
+        proc.userdata["tenants"] = TenantStore(_tenant_dir())
     except Exception:  # noqa: BLE001 - a bad tenant file should surface, not crash the worker
         log.exception("tenant store failed to load at prewarm; will retry per call")
 
 
 def _stores(proc_userdata: dict[str, Any]) -> tuple[TenantStore, CalendarStore, MessageStore]:
     """Fetch the prewarmed stores, building any that prewarm could not."""
-    tenants = proc_userdata.get("tenants") or TenantStore(
-        os.getenv("STACY_TENANT_DIR", "src/stacy/tenants/data")
-    )
+    tenants = proc_userdata.get("tenants") or TenantStore(_tenant_dir())
     data_dir = os.getenv("STACY_DATA_DIR", "data")
     calendar = proc_userdata.setdefault("calendar", CalendarStore(f"{data_dir}/calendar"))
     messages = proc_userdata.setdefault("messages", MessageStore(f"{data_dir}/messages"))
@@ -177,6 +188,13 @@ def _webhook() -> WebhookSender | None:
 
 async def entrypoint(ctx: Any) -> None:
     """LiveKit job entrypoint. One invocation per inbound call."""
+    room_name = getattr(getattr(getattr(ctx, "job", None), "room", None), "name", "") or ""
+    if room_name.startswith(KEEP_WARM_PREFIX):
+        # Not a call: a ping that stops the worker scaling to zero. A sleeping
+        # worker takes 20-30s to wake, and the call that wakes it rings out.
+        log.info("keep-warm ping %s", room_name)
+        return
+
     from livekit.agents import AgentSession, RoomInputOptions  # noqa: PLC0415
 
     await ctx.connect()
@@ -205,15 +223,14 @@ async def entrypoint(ctx: Any) -> None:
         "stt": build_stt(cfg.stt),
         "llm": build_llm(cfg.llm),
         "tts": build_tts(cfg.tts),
-        "turn_detection": userdata.get("turn_detector") or _turn_detector(cfg),
-        "min_endpointing_delay": cfg.turn.min_endpointing_delay_s,
-        "max_endpointing_delay": cfg.turn.max_endpointing_delay_s,
-        "preemptive_generation": cfg.turn.preemptive_generation,
-        # Held only in the backchannel filter, this classified correctly and
-        # suppressed nothing -- the session is what owns the interruption.
-        "min_interruption_words": cfg.turn.interrupt_min_words,
-        "false_interruption_timeout": cfg.turn.false_interruption_timeout_s,
-        "resume_false_interruption": True,
+        # Endpointing, interruption and preemptive generation -- now voiced
+        # early as well as written early -- in the SDK's current shape. The
+        # session owns interruption; see registry.turn_handling.
+        "turn_handling": turn_handling(
+            cfg.turn, userdata.get("turn_detector") or _turn_detector(cfg)
+        ),
+        # A stuck model request is retried after seconds, not the SDK's ten.
+        "conn_options": llm_conn_options(cfg.llm),
     }
     session = AgentSession(**supported(AgentSession, session_kwargs))
 
@@ -251,7 +268,8 @@ async def entrypoint(ctx: Any) -> None:
     # before the phone rings, and synthesising it live puts 330-570ms of TTS
     # first-byte latency in the gap between the caller saying "hello?" and the
     # business answering -- the one stall no filler can cover, because it comes
-    # before the first word. From cache it is under a millisecond.
+    # before the first word. From cache it is under a millisecond. On a miss it
+    # is spoken live and recorded in the background for the next call.
     audio = await greeting.prepare(
         runtime.tenant, cfg.tts, f"{os.getenv('STACY_DATA_DIR', 'data')}/greetings", build_tts
     )
@@ -314,10 +332,25 @@ def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard) -> None
 
     @session.on("conversation_item_added")  # type: ignore[attr-defined]
     def _on_item(ev: Any) -> None:
+        # Latency comes from the SDK's timestamps on the items themselves: the
+        # caller's message says when they stopped, the reply says when its
+        # audio started. One log line per reply, because nothing on disk
+        # survives the worker. See stacy.metrics.live.
         item = getattr(ev, "item", None)
-        if getattr(item, "role", None) != "assistant":
+        role = getattr(item, "role", None)
+        metrics = getattr(item, "metrics", None)
+        metrics = metrics if isinstance(metrics, dict) else None
+        if role == "user":
+            runtime.latency.on_user(metrics)
+            return
+        if role != "assistant":
             return
         text = getattr(item, "text_content", None) or ""
+        record = runtime.latency.on_reply(
+            metrics, interrupted=bool(getattr(item, "interrupted", False)), chars=len(text)
+        )
+        if record is not None:
+            log.info("latency %s", format_reply(runtime.call_id, record))
         if not text:
             return
         runtime.record_agent(text)
@@ -386,7 +419,7 @@ async def _silence_watchdog(
 
     asked = False
     quiet_for = 0.0
-    tick = 0.5
+    tick = 0.25  # the noise-held turn is committed within a quarter second of its deadline
     try:
         while True:
             await asyncio.sleep(tick)
@@ -437,9 +470,10 @@ async def _silence_watchdog(
 async def _on_shutdown(runtime: CallRuntime, watchdog: asyncio.Future[Any]) -> None:
     """Flush the last turn, text the confirmation, and deliver the call.
 
-    Ordering matters: the trace is flushed first so the latency summary in the
-    payload includes the final turn, and the SMS is attempted before the webhook
-    so a consent refusal shows up in the delivered record.
+    Ordering matters: the SMS is attempted before the webhook so a consent
+    refusal shows up in the delivered record. The latency summary is logged as
+    one line as well as put in the payload: with no webhook configured, the log
+    is the only place it outlives the worker.
     """
     watchdog.cancel()
     runtime.finish()
@@ -454,7 +488,21 @@ async def _on_shutdown(runtime: CallRuntime, watchdog: asyncio.Future[Any]) -> N
             # produced two is evaluated twice.
             log.info("no SMS for %s: consent was not captured", appt.appointment_id)
 
-    payload = runtime.post_call_payload()
+    latency = runtime.latency.summary()
+    log.info(
+        "call_summary %s",
+        json.dumps(
+            {
+                "call": runtime.call_id,
+                "tenant": runtime.tenant.tenant_id,
+                "outcome": runtime.outcome,
+                "duration_s": round(runtime.duration_s, 1),
+                **latency,
+            },
+            separators=(",", ":"),
+        ),
+    )
+    payload = runtime.post_call_payload(latency=latency)
 
     # Archive before delivering. The webhook can be down, misconfigured, or not
     # set up yet; none of those should mean the call went unrecorded, and the
@@ -466,6 +514,30 @@ async def _on_shutdown(runtime: CallRuntime, watchdog: asyncio.Future[Any]) -> N
         await webhook.send(payload)
 
 
+def _require_tenants() -> int:
+    """Refuse to start a worker that cannot route a single call.
+
+    Every call is routed by the number dialed, so a worker with no tenants still
+    accepts each job and then crashes on it, and the caller hears ringing until
+    the carrier gives up. The dana-to-stacy rename did exactly that:
+    STACY_TENANT_DIR still named src/dana/tenants/data, the image had no such
+    folder, the store loaded nothing, and every call rang out while the agent
+    reported Running. Exiting here turns that into a failed deploy instead.
+    """
+    tenant_dir = _tenant_dir()
+    try:
+        count = len(TenantStore(tenant_dir).all())
+    except Exception as exc:  # noqa: BLE001 - any load failure means nothing routes
+        raise SystemExit(
+            f"cannot load tenants from {tenant_dir!r} (STACY_TENANT_DIR): {exc}"
+        ) from exc
+    if not count:
+        raise SystemExit(
+            f"no tenants in {tenant_dir!r} (STACY_TENANT_DIR) -- every call would ring out"
+        )
+    return count
+
+
 def main() -> None:
     """Run the worker. `python -m stacy.agent.entrypoint`."""
     from dotenv import load_dotenv  # noqa: PLC0415
@@ -473,6 +545,7 @@ def main() -> None:
 
     load_dotenv()
     logging.basicConfig(level=os.getenv("STACY_LOG_LEVEL", "INFO"))
+    log.info("routing calls for %d tenant(s) from %s", _require_tenants(), _tenant_dir())
 
     # Must happen here, on the main thread. livekit-agents registers a plugin
     # when its module is imported and refuses to do so from a worker thread, so

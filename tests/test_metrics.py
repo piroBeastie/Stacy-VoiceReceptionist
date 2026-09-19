@@ -105,25 +105,14 @@ class TestTheTraceReachesSomewhereReadable:
             messages=MessageStore(tmp_path / "msg"),
         )
 
-    def test_a_completed_turn_logs_its_headline_number(self, tenant, tmp_path, caplog):
+    def test_the_misleading_stage_line_is_gone_from_the_log(self, tenant, tmp_path, caplog):
+        # It started 0.55s late and filed tool round trips under TTS. Caller-heard
+        # latency is logged from stacy.metrics.live; see test_live_latency.
         rt = self._runtime(tenant, tmp_path)
         rt.begin_turn()
         for stage in (Stage.USER_STOPPED, Stage.STT_FINAL, Stage.LLM_FIRST_TOKEN,
                       Stage.TTS_FIRST_BYTE, Stage.AUDIO_OUT):
             rt.mark(stage)
-        with caplog.at_level("INFO", logger="stacy.agent"):
-            rt.flush_turn()
-
-        assert "response_ms=" in caplog.text
-        assert "c-log" in caplog.text
-
-    def test_an_incomplete_turn_stays_quiet(self, tenant, tmp_path, caplog):
-        # A turn with no audio out has no headline number, and inventing one --
-        # or logging a line of empty fields every turn -- makes the log useless
-        # for the turns that did complete.
-        rt = self._runtime(tenant, tmp_path)
-        rt.begin_turn()
-        rt.mark(Stage.USER_STOPPED)
         with caplog.at_level("INFO", logger="stacy.agent"):
             rt.flush_turn()
 

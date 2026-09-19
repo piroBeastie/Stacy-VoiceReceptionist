@@ -21,11 +21,24 @@ names and their yielded types are the surface most likely to have moved.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from typing import Any, AsyncIterable
+import time
+from typing import Any, AsyncIterable, AsyncIterator
 
+from stacy.agent.fastlane import desk_reply, name_spelled
 from stacy.agent.runtime import CallRuntime
-from stacy.agent.speech import strip_audio_tags_stream
+from stacy.agent.slots import (
+    foreign_number_note,
+    heard_booking_details,
+    number_with_country,
+    partial_number_note,
+    phone_across_turns,
+    phone_in_speech,
+    readback_note,
+)
+from stacy.agent.speech import push_with_flush, strip_audio_tags_stream
 from stacy.agent.tools import DeskOperations, build_function_tools
 from stacy.metrics import Stage
 
@@ -48,7 +61,103 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
         """Agent that times its own critical path and keeps tags out of the voice."""
 
         def __init__(self) -> None:
-            super().__init__(instructions=runtime.system_prompt, tools=tools)
+            from livekit.agents.llm import ChatContext  # noqa: PLC0415
+
+            # The stable prompt as instructions, and everything per-call in a
+            # first message: see CallRuntime.instructions and call_briefing.
+            briefing = ChatContext.empty()
+            briefing.add_message(role="user", content=ops.call_briefing())
+            super().__init__(
+                instructions=runtime.instructions or runtime.system_prompt,
+                tools=tools,
+                chat_ctx=briefing,
+            )
+
+        async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
+            """Catch a phone number the caller read out, before the model answers.
+
+            On a live call the model skipped `record_details` and turned "double
+            9, double 8, triple 4, 5 2 0" into digits itself: an extra nine,
+            eleven digits, read back wrong four times while the caller corrected
+            it. The number is parsed here instead, saved to the booking, and its
+            read-back is attached to the caller's message, so the model reads out
+            digits it was given rather than digits it worked out. Editing the
+            message discards a preemptive reply started without the note, which
+            on this one kind of turn is the point.
+            """
+            text = getattr(new_message, "text_content", None) or ""
+            runtime.desk_reply = None
+            if not text:
+                return
+            reply = desk_reply(runtime, text)
+            if reply is not None and reply.action == "book":
+                # A yes to the read-back. Booked here, and the desk's line is
+                # spoken only if the calendar took it; if not, the model tells
+                # them what the calendar said instead.
+                started = time.perf_counter()
+                result = await asyncio.to_thread(ops.book_appointment)
+                log.info(
+                    "tool %s book_appointment() by the desk -> %r in %.0fms",
+                    runtime.call_id,
+                    result[:200],
+                    (time.perf_counter() - started) * 1000,
+                )
+                if not result.startswith("Booked"):
+                    runtime.last_caller_turn = text
+                    new_message.content.append(
+                        "(Not said by the caller: they said yes to the read-back, so the booking "
+                        f"was tried, and the calendar said: {result})"
+                    )
+                    return
+            if reply is not None:
+                # A turn with one right reply; see stacy.agent.fastlane. The note
+                # changes the message, which discards the model's preemptive
+                # reply, so the desk's is the one spoken.
+                runtime.slots.update(**reply.record)
+                runtime.last_caller_turn = text
+                runtime.desk_reply = (text, reply.speech)
+                new_message.content.append(reply.note)
+                log.info("call %s: desk reply, recorded %s", runtime.call_id, reply.record)
+                return
+            notes: list[str] = []
+            spelled = name_spelled(runtime, text)
+            if spelled:
+                # Heard as "Nak" while the letters said N-A-N-A-K.
+                runtime.slots.update(customer_name=spelled)
+                notes.append(
+                    f"(Not said by the caller: they spelled their name out, so it's {spelled}. "
+                    "Use that spelling.)"
+                )
+            number = phone_in_speech(text, caller_id=runtime.caller_id)
+            if not number and not runtime.slots.phone:
+                # A number read out or corrected over two turns; see phone_across_turns.
+                number = phone_across_turns(
+                    runtime.last_caller_turn, text, caller_id=runtime.caller_id
+                ) or number_with_country(runtime.last_caller_turn, text)
+            runtime.last_caller_turn = text
+            if number:
+                runtime.slots.update(phone=number)
+                notes.append(readback_note(number))
+                log.info("call %s: caller read out a number, saved %s", runtime.call_id, number)
+            elif not runtime.slots.phone and (partial := partial_number_note(text)):
+                notes.append(partial)
+            elif not runtime.slots.phone and (foreign := foreign_number_note(text)):
+                notes.append(foreign)
+
+            # The same backstop for the town, day and window, which the model
+            # records in the same breath as speaking and occasionally doesn't.
+            # Only empty slots are filled, and nothing is added to the message
+            # unless the calendar refuses what was said.
+            heard = heard_booking_details(text, runtime.tenant)
+            fill = {k: v for k, v in heard.items() if not getattr(runtime.slots, k)}
+            if fill:
+                newly = runtime.slots.update(**fill)
+                log.info("call %s: heard %s from the caller", runtime.call_id, fill)
+                refusal = ops.check_when(newly)
+                if refusal:
+                    notes.append(f"(Not said by the caller: {refusal})")
+
+            new_message.content.extend(notes)
 
         async def stt_node(self, audio: Any, model_settings: Any) -> Any:
             """Pass audio through, marking the first final transcript."""
@@ -91,12 +200,56 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                     yield script
                 return
 
+            # A reply the desk already wrote for this turn: spoken as it is, and
+            # the model is not called. Matched to the caller's words, so a reply
+            # whose turn was cut short can never be spoken on the next one.
+            pending = runtime.desk_reply
+            if pending is not None and spoken and pending[0].strip() in spoken:
+                runtime.desk_reply = None
+                runtime.mark(Stage.LLM_FIRST_TOKEN, desk_reply=True)
+                runtime.latency.on_desk_reply()
+                yield pending[1]
+                return
+
+            # Every model pass is logged with what came first. A pass that writes a
+            # tool call before any words costs its whole length before the caller
+            # hears anything, and the SDK's ttft only times the pass after it.
             first = True
+            started = time.perf_counter()
+            text_ms: float | None = None
+            tool_ms: float | None = None
+            chars = 0
+            called: list[str] = []
             async for chunk in super().llm_node(chat_ctx, tools, model_settings):
                 if first:
                     runtime.mark(Stage.LLM_FIRST_TOKEN)
                     first = False
+                delta = getattr(chunk, "delta", None)
+                content = chunk if isinstance(chunk, str) else getattr(delta, "content", None)
+                calls = getattr(delta, "tool_calls", None) or []
+                elapsed = (time.perf_counter() - started) * 1000
+                if content:
+                    chars += len(content)
+                    text_ms = elapsed if text_ms is None else text_ms
+                if calls:
+                    tool_ms = elapsed if tool_ms is None else tool_ms
+                    called += [getattr(c, "name", "") for c in calls]
                 yield chunk
+            order = (
+                "tool-first" if tool_ms is not None and (text_ms is None or tool_ms < text_ms)
+                else "text-first" if text_ms is not None
+                else "empty"
+            )
+            log.info("llm_pass %s", json.dumps({
+                "call": runtime.call_id,
+                "order": order,
+                "started_at": round(time.time() - (time.perf_counter() - started), 3),
+                "text_ms": round(text_ms) if text_ms is not None else None,
+                "tool_ms": round(tool_ms) if tool_ms is not None else None,
+                "total_ms": round((time.perf_counter() - started) * 1000),
+                "chars": chars,
+                "tools": called,
+            }))
 
         async def tts_node(self, text: AsyncIterable[str], model_settings: Any) -> Any:
             """Synthesize, marking the first frame from the vendor and out the door.
@@ -105,8 +258,16 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
             voice model reads them out: "[slow] two-zero-three" was spoken as
             "slow, two-zero-three". See :mod:`stacy.agent.speech`.
             """
+            clean = strip_audio_tags_stream(text)
+            tts = self.session.tts
+            if tts is not None and tts.capabilities.streaming:
+                # The SDK's streaming synthesis, but with a short reply flushed
+                # the moment the model's text stalls on a tool call.
+                frames = _synthesize(tts, clean, self.session.conn_options.tts_conn_options)
+            else:
+                frames = super().tts_node(clean, model_settings)
             first = True
-            async for frame in super().tts_node(strip_audio_tags_stream(text), model_settings):
+            async for frame in frames:
                 if first:
                     runtime.mark(Stage.TTS_FIRST_BYTE)
                     runtime.mark(Stage.AUDIO_OUT)
@@ -114,6 +275,19 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                 yield frame
 
     return InstrumentedAgent()
+
+
+async def _synthesize(tts: Any, text: AsyncIterable[str], conn_options: Any) -> AsyncIterator[Any]:
+    """Streaming synthesis as the SDK does it, with the text pushed by push_with_flush."""
+    from livekit.agents import utils  # noqa: PLC0415
+
+    async with tts.stream(conn_options=conn_options) as stream:
+        push = asyncio.create_task(push_with_flush(text, stream))
+        try:
+            async for ev in stream:
+                yield ev.frame
+        finally:
+            await utils.aio.cancel_and_wait(push)
 
 
 def _last_user_text(chat_ctx: Any) -> str:

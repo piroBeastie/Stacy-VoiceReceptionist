@@ -27,7 +27,13 @@ class TenantStore:
         Raises on a duplicate phone number: two tenants on one line is a
         misconfiguration that would otherwise surface as a caller reaching the
         wrong business, which is the worst possible place to find out.
+
+        Raises on a directory that does not exist, too. Globbing a missing path
+        yields nothing, so a stale path used to load as a store with no tenants,
+        and every call to every number then failed routing with the line ringing.
         """
+        if not self._dir.is_dir():
+            raise FileNotFoundError(f"tenant directory {str(self._dir)!r} does not exist")
         by_id: dict[str, Tenant] = {}
         by_number: dict[str, Tenant] = {}
         for path in sorted(self._dir.glob("*.json")):
@@ -46,7 +52,10 @@ class TenantStore:
         try:
             return self._by_number[dialed]
         except KeyError:
-            raise KeyError(f"no tenant configured for dialed number {dialed!r}") from None
+            raise KeyError(
+                f"no tenant configured for dialed number {dialed!r} "
+                f"({len(self._by_number)} number(s) loaded from {str(self._dir)!r})"
+            ) from None
 
     def get(self, tenant_id: str) -> Tenant:
         return self._by_id[tenant_id]

@@ -154,31 +154,48 @@ class CalendarStore:
         business then has to break by hand.
         """
         now = now or datetime.now(ZoneInfo(tenant.timezone))
+        return [
+            w.label
+            for w in tenant.booking_windows
+            if not self.why_unavailable(tenant, day, w.label, now=now)
+        ]
+
+    def why_unavailable(
+        self, tenant: Tenant, day: Date, window_label: str, *, now: datetime | None = None
+    ) -> str:
+        """Why a window can't be booked: 'closed', 'unknown', 'outside_hours', 'passed' or 'full'.
+
+        An empty string means it can. The reasons are kept apart because they
+        are said differently on the phone: a Saturday afternoon the office never
+        runs used to come back as "just filled up", and a live caller went round
+        the same impossible booking twice.
+        """
+        now = now or datetime.now(ZoneInfo(tenant.timezone))
         weekday = WEEKDAY_NAMES[day.weekday()]
         if not tenant.is_open_on(weekday):
-            return []
+            return "closed"
+        window = next((w for w in tenant.booking_windows if w.label == window_label), None)
+        if window is None:
+            return "unknown"
         hours = tenant.hours_for(weekday)
-
-        out: list[str] = []
-        for window in tenant.booking_windows:
-            # A window has to fit inside the day's hours. Zero-padded 24h
-            # strings compare correctly as strings, so no parsing is needed.
-            # Without this the Saturday that closes at one still offered a
-            # two-to-five window, which is a visit nobody would have shown up for.
-            if hours is not None and not hours.closed:
-                if window.start < (hours.open_at or "") or window.end > (hours.close_at or ""):
-                    continue
-            if day == now.date():
-                end_h, _, end_m = window.end.partition(":")
-                window_end = now.replace(
-                    hour=int(end_h), minute=int(end_m or 0), second=0, microsecond=0
-                )
-                if window_end <= now:
-                    continue
-            if self.booked_count(tenant.tenant_id, day, window.label) >= tenant.capacity_per_window:
-                continue
-            out.append(window.label)
-        return out
+        # A window has to fit inside the day's hours. Zero-padded 24h strings
+        # compare correctly as strings, so no parsing is needed. Without this the
+        # Saturday that closes at one still offered a two-to-five window, which is
+        # a visit nobody would have shown up for.
+        if (
+            hours is not None
+            and not hours.closed
+            and (window.start < (hours.open_at or "") or window.end > (hours.close_at or ""))
+        ):
+            return "outside_hours"
+        if day == now.date():
+            end_h, _, end_m = window.end.partition(":")
+            window_end = now.replace(hour=int(end_h), minute=int(end_m or 0), second=0, microsecond=0)
+            if window_end <= now:
+                return "passed"
+        if self.booked_count(tenant.tenant_id, day, window.label) >= tenant.capacity_per_window:
+            return "full"
+        return ""
 
     def next_available(
         self, tenant: Tenant, *, within_days: int = 14, now: datetime | None = None

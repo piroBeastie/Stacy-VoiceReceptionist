@@ -8,8 +8,10 @@ beat.
 from stacy.metrics.turn import Stage, TurnTrace
 from stacy.metrics.sink import JsonlSink, NullSink, TraceSink
 from stacy.metrics.report import Report, load_traces, summarize
+from stacy.metrics.live import CallLatency
 
 __all__ = [
+    "CallLatency",
     "Stage",
     "TurnTrace",
     "TraceSink",

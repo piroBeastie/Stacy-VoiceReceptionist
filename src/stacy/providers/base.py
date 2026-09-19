@@ -229,6 +229,15 @@ class TTSConfig:
 
     chunk_length_schedule: tuple[int, ...] = (50, 160, 250, 290)
 
+    auto_mode: bool = True
+    """Synthesize sentence by sentence, flushing each, instead of on the schedule above.
+
+    Measured on a 29-character reply followed by a tool call: first audio 630 ms
+    after the text on the schedule, 300 ms in auto mode with the stall flush in
+    :func:`stacy.agent.speech.push_with_flush`. Long replies were the same
+    either way, about 170 ms.
+    """
+
 
 @dataclass(frozen=True)
 class FillerConfig:
@@ -306,9 +315,16 @@ class TurnConfig:
     """Raised from 0.05. Fifty milliseconds is short enough that a door closing
     counts as the caller starting to talk."""
 
-    vad_min_silence_s: float = 0.55
-    """Silero's default. Lower cuts people off mid-sentence; the semantic
-    detector, not this, owns the endpointing decision."""
+    vad_min_silence_s: float = 0.30
+    """How long a pause must be before the turn detector is asked at all.
+
+    Down from Silero's 0.55, then from 0.40. On measured calls every reply
+    waited this long before anything else began: at 0.40 the end-of-turn gap
+    averaged 451 ms, the biggest fixed cost left on a fast-path reply. Pauses
+    in the middle of a sentence are the semantic detector's job: it holds the
+    turn open up to `max_endpointing_delay_s`. Much below 0.25 the final
+    transcript (170-310 ms after speech ends) becomes the wait instead.
+    """
 
     use_semantic_endpointing: bool = True
     min_endpointing_delay_s: float = 0.2
@@ -320,14 +336,29 @@ class TurnConfig:
     and reads as far less human than the 80ms it saved.
     """
 
-    max_endpointing_delay_s: float = 2.5
-    """Ceiling when the detector judges the caller is mid-thought."""
+    max_endpointing_delay_s: float = 2.0
+    """Ceiling when the detector judges the caller is mid-thought.
+
+    Down from 2.5: on measured calls the slowest reply in ten sat exactly on
+    this ceiling, after half-finished sentences and pauses between groups of
+    digits. Two seconds still covers a caller reading out a number.
+    """
 
     preemptive_generation: bool = True
     """Start the LLM on interim transcript; cancel if the caller keeps talking.
 
     Costs some wasted tokens, removes STT finalization from the critical path.
     On a cheap fast model that trade is heavily one-sided.
+    """
+
+    preemptive_tts: bool = True
+    """Voice the preemptive reply too, not just write it.
+
+    With only the model running early, audio still waited for the turn to be
+    confirmed and then for the voice's first byte. Voiced early, the reply is
+    ready to play the moment the turn ends. If the caller keeps talking the
+    audio is thrown away with the text: some wasted characters, and never an
+    extra word reaching the caller.
     """
 
     interrupt_min_words: int = 3
@@ -355,7 +386,7 @@ class TurnConfig:
     """Keep transcribing speech that is not allowed to interrupt, so it carries
     into the next turn instead of being discarded."""
 
-    noise_commit_after_s: float = 2.0
+    noise_commit_after_s: float = 1.5
     """Answer anyway once background noise is what holds the caller's turn open.
 
     A final transcript ends a turn only when voice detection says the caller has
@@ -364,7 +395,11 @@ class TurnConfig:
     caller who had finished was never answered. Speech produces words and noise
     does not: this long after the last transcribed word, with a transcript still
     waiting, the turn is committed. It sits under the semantic detector's own
-    worst-case wait, so a noisy line is never slower than a quiet one would be."""
+    worst-case wait, so a noisy line is never slower than a quiet one would be.
+
+    Down from 2.0: on a live call a noisy line left the agent silent longer
+    than a quiet line ever does. Not lower, because a caller pausing to think on
+    a noisy line would be cut off instead, which is no more human."""
 
     turn_timeout_s: float = 9.0
     """Silence before the agent re-engages. The prompt tells it to ask 'Still

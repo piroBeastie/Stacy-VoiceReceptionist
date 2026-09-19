@@ -101,6 +101,27 @@ class TestAvailability:
         assert "eleven to two" not in cal.availability(tenant, day, now=monday_9am)
         assert "two to five" in cal.availability(tenant, day, now=monday_9am)
 
+    def test_every_refusal_carries_its_real_reason(
+        self, cal: CalendarStore, tenant: Tenant, monday_9am: datetime
+    ) -> None:
+        tuesday, saturday, sunday = date(2026, 9, 15), date(2026, 9, 19), date(2026, 9, 20)
+        assert cal.why_unavailable(tenant, sunday, "eleven to two", now=monday_9am) == "closed"
+        # Saturday runs nine to one, so no window fits inside it. A live caller
+        # was told this one had "just filled up".
+        assert (
+            cal.why_unavailable(tenant, saturday, "eleven to two", now=monday_9am) == "outside_hours"
+        )
+        afternoon = datetime(2026, 9, 14, 15, 0, tzinfo=ZoneInfo(tenant.timezone))
+        assert (
+            cal.why_unavailable(tenant, date(2026, 9, 14), "eight to eleven", now=afternoon)
+            == "passed"
+        )
+        assert cal.why_unavailable(tenant, tuesday, "seven to nine", now=monday_9am) == "unknown"
+        for i in range(tenant.capacity_per_window):
+            _book(cal, tenant, tuesday, "eleven to two", name=f"Caller {i}", now=monday_9am)
+        assert cal.why_unavailable(tenant, tuesday, "eleven to two", now=monday_9am) == "full"
+        assert cal.why_unavailable(tenant, tuesday, "two to five", now=monday_9am) == ""
+
     def test_next_available_skips_closed_days(
         self, cal: CalendarStore, tenant: Tenant
     ) -> None:

@@ -14,12 +14,38 @@ the tenant configured.
 from __future__ import annotations
 
 import asyncio
-import json
+from types import SimpleNamespace
 
 import pytest
 
 from stacy.agent import greeting
 from stacy.tenants import Tenant
+
+
+class Cfg:
+    voice_id, model, audio_format = "v1", "flash", "pcm_8000"
+    speed, stability, similarity_boost = 1.0, 0.5, 0.8
+
+
+class _RecordingTTS:
+    """Stands in for the vendor: records what it was asked to say."""
+
+    def __init__(self, asked: list[str]) -> None:
+        self.asked = asked
+
+    def synthesize(self, text: str):
+        self.asked.append(text)
+
+        class _Stream:
+            async def collect(self):
+                return SimpleNamespace(data=b"\x00\x00" * 80, sample_rate=8000, num_channels=1)
+
+        return _Stream()
+
+
+async def _settle() -> None:
+    """Let background renders started by `prepare` finish."""
+    await asyncio.gather(*list(greeting._rendering))
 
 
 class TestTheCacheKey:
@@ -37,16 +63,26 @@ class TestTheCacheKey:
         base = greeting._key("Hello.", "v1", "flash", "pcm_8000")
         assert greeting._key("Hello.", *changed) != base
 
+    def test_a_voice_setting_change_is_a_different_recording(self) -> None:
+        # Slowing the voice down kept playing the greeting recorded at full speed.
+        slower = Cfg()
+        slower.speed = 0.92
+        assert greeting.key_for("Hello.", Cfg()) != greeting.key_for("Hello.", slower)
+
     def test_the_same_inputs_are_stable_across_runs(self) -> None:
         # A key that moved between restarts would re-synthesise forever.
-        args = ("Hello.", "v1", "flash", "pcm_8000")
-        assert greeting._key(*args) == greeting._key(*args)
+        assert greeting.key_for("Hello.", Cfg()) == greeting.key_for("Hello.", Cfg())
 
 
 class TestTheCacheOnDisk:
     def test_a_stored_greeting_comes_back_intact(self, tmp_path) -> None:
         greeting.store(tmp_path, "k", b"\x01\x02\x03\x04", 8000, 1)
         assert greeting.load(tmp_path, "k") == (b"\x01\x02\x03\x04", 8000, 1)
+
+    def test_storing_leaves_no_temporary_files(self, tmp_path) -> None:
+        # Every job process on a worker shares the directory; writes go through a rename.
+        greeting.store(tmp_path, "k", b"\x01\x02", 8000, 1)
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["k.json", "k.pcm"]
 
     def test_nothing_stored_is_a_miss_not_a_crash(self, tmp_path) -> None:
         assert greeting.load(tmp_path, "never-written") is None
@@ -72,24 +108,42 @@ class TestPrepare:
         result = asyncio.run(greeting.prepare(blank, object(), tmp_path, lambda _cfg: None))
         assert result is None
 
-    def test_a_synthesis_failure_falls_back_instead_of_failing_the_call(
+    def test_a_miss_is_spoken_live_and_recorded_for_the_next_call(
         self, tenant: Tenant, tmp_path
     ) -> None:
-        # Returning None means "let the session synthesise it live". A cache
-        # that could drop the greeting entirely would be worse than no cache.
-        class Cfg:
-            voice_id, model, audio_format = "v1", "flash", "pcm_8000"
+        # The first caller after a restart must not wait for a full render.
+        asked: list[str] = []
 
+        def must_not_be_called(_cfg):
+            raise AssertionError("synthesised despite a warm cache")
+
+        async def two_calls():
+            first = await greeting.prepare(tenant, Cfg(), tmp_path, lambda _c: _RecordingTTS(asked))
+            await _settle()
+            second = await greeting.prepare(tenant, Cfg(), tmp_path, must_not_be_called)
+            return first, second
+
+        first, second = asyncio.run(two_calls())
+        assert first is None
+        assert second is not None
+        assert asked == [tenant.greeting.strip()]
+
+    def test_a_render_failure_never_reaches_the_call(self, tenant: Tenant, tmp_path) -> None:
+        # None means "let the session synthesise it live". A cache that could
+        # drop the greeting entirely would be worse than no cache.
         def explode(_cfg):
             raise RuntimeError("elevenlabs is down")
 
-        assert asyncio.run(greeting.prepare(tenant, Cfg(), tmp_path, explode)) is None
+        async def call():
+            result = await greeting.prepare(tenant, Cfg(), tmp_path, explode)
+            await _settle()
+            return result
+
+        assert asyncio.run(call()) is None
+        assert not any(tmp_path.iterdir())
 
     def test_a_cache_hit_never_calls_the_vendor(self, tenant: Tenant, tmp_path) -> None:
-        class Cfg:
-            voice_id, model, audio_format = "v1", "flash", "pcm_8000"
-
-        key = greeting._key(tenant.greeting.strip(), "v1", "flash", "pcm_8000")
+        key = greeting.key_for(tenant.greeting.strip(), Cfg())
         greeting.store(tmp_path, key, b"\x00\x00" * 80, 8000, 1)
 
         def must_not_be_called(_cfg):

@@ -210,6 +210,9 @@ def register_plugins() -> None:
         "livekit.plugins.anthropic",
         "livekit.plugins.cartesia",
         "livekit.plugins.assemblyai",
+        # Imported per call by build_noise_cancellation until this was here:
+        # 254ms of the agent loop blocked at call start on the live worker.
+        "livekit.plugins.noise_cancellation",
     ):
         try:
             importlib.import_module(module)
@@ -246,11 +249,22 @@ def warm_imports() -> None:
         # A live call measured 502ms of event loop blocked importing this,
         # at the moment the caller was waiting for the greeting.
         "tqdm.utils",
+        # The next link in the same chain. Building the turn detector looks up
+        # a file through huggingface_hub, which imports filelock: 243-255ms
+        # blocked at the start of every live call once tqdm was warm.
+        "huggingface_hub.file_download",
+        # 154ms blocked importing anyio's asyncio backend at call start.
+        "anyio._backends._asyncio",
+        # Built into every call's audio input; loading it during the call cost
+        # 254-554ms of blocked loop before the greeting. Last in the list: a
+        # plugin can refuse to register off the main thread, and that must not
+        # stop the imports above.
+        "livekit.plugins.noise_cancellation",
     ):
         try:
             importlib.import_module(module)
-        except ImportError:
-            log.debug("%s not installed; nothing to warm", module)
+        except Exception:  # noqa: BLE001 - warming is best effort, module by module
+            log.debug("%s could not be warmed", module, exc_info=True)
 
 
 def _opt_float(name: str, default: float | None) -> float | None:
@@ -395,13 +409,19 @@ def build_tts(cfg: TTSConfig) -> Any:
             "api_key": _key("ELEVENLABS_API_KEY"),
             "voice_id": cfg.voice_id,
             "encoding": TELEPHONY_FORMAT,
-            "chunk_length_schedule": list(schedule),
             "voice_settings": elevenlabs.VoiceSettings(
                 stability=cfg.stability,
                 similarity_boost=cfg.similarity_boost,
                 speed=cfg.speed,
             ),
         }
+        if cfg.auto_mode:
+            # A sentence at a time, each sent with a flush, which is what lets
+            # the agent's tts_node release a short reply while the model is still
+            # writing a tool call. A chunk schedule turns auto mode off.
+            kwargs["auto_mode"] = True
+        else:
+            kwargs["chunk_length_schedule"] = list(schedule)
         return elevenlabs.TTS(**supported(elevenlabs.TTS, kwargs))
 
     if cfg.vendor == "cartesia":
@@ -482,6 +502,70 @@ def build_noise_cancellation(cfg: TurnConfig) -> Any | None:
     return made()
 
 
+def turn_handling(cfg: TurnConfig, turn_detector: Any | None) -> dict[str, Any]:
+    """AgentSession's turn settings, in the shape the SDK now takes them.
+
+    The values are the ones the deprecated keyword arguments carried --
+    livekit-agents migrates those into exactly this dict -- so moving here
+    changes no behaviour by itself. It is where `preemptive_tts` lives, which
+    the old arguments could not express. `turn_detection` is always present:
+    left out, the SDK substitutes its own default detector instead of VAD.
+    """
+    return {
+        "turn_detection": turn_detector,
+        "endpointing": {
+            "min_delay": cfg.min_endpointing_delay_s,
+            "max_delay": cfg.max_endpointing_delay_s,
+        },
+        "interruption": {
+            "min_words": cfg.interrupt_min_words,
+            "false_interruption_timeout": cfg.false_interruption_timeout_s,
+            "resume_false_interruption": True,
+        },
+        "preemptive_generation": {
+            "enabled": cfg.preemptive_generation,
+            "preemptive_tts": cfg.preemptive_tts,
+        },
+    }
+
+
+def llm_conn_options(cfg: LLMConfig) -> Any:
+    """How long one model request may hang before it is abandoned and retried.
+
+    livekit-agents waits 10 seconds by default. On a live call the Anthropic
+    request stalled, the caller heard 13 seconds of nothing, and the retry then
+    answered in under two. `LLMConfig.timeout_s` only reached the fallback
+    adapter, which is not configured, so it never applied to a single request.
+    The first retry is immediate; a normal reply's first token arrives in well
+    under a second, so the timeout only ever fires on a request that is stuck.
+    """
+    from livekit.agents import APIConnectOptions  # noqa: PLC0415
+    from livekit.agents.voice.agent_session import SessionConnectOptions  # noqa: PLC0415
+
+    return SessionConnectOptions(
+        llm_conn_options=APIConnectOptions(max_retry=2, retry_interval=0.5, timeout=cfg.timeout_s)
+    )
+
+
+def warm_turn_detector_files() -> None:
+    """Resolve the end-of-utterance model's config file before a call needs it.
+
+    The detector is built per call (see :func:`prewarm` for why it cannot be
+    built here), and building it looks up `languages.json` in the local Hugging
+    Face cache on the agent loop. Doing the same lookup here pays for the imports
+    and the filesystem walk on a process nobody is talking to yet.
+    """
+    from huggingface_hub import hf_hub_download  # noqa: PLC0415
+    from livekit.plugins.turn_detector.models import HG_MODEL, MODEL_REVISIONS  # noqa: PLC0415
+
+    hf_hub_download(
+        repo_id=HG_MODEL,
+        filename="languages.json",
+        revision=MODEL_REVISIONS["en"],
+        local_files_only=True,
+    )
+
+
 def prewarm(userdata: dict[str, Any], *, turn: TurnConfig | None = None) -> None:
     """Load Silero once per worker process, before any call arrives.
 
@@ -507,6 +591,11 @@ def prewarm(userdata: dict[str, Any], *, turn: TurnConfig | None = None) -> None
         warm_imports()
     except Exception:  # noqa: BLE001 - warming is an optimisation, never a gate
         log.exception("import warm-up failed; the first turn will pay for it")
+    if turn.use_semantic_endpointing:
+        try:
+            warm_turn_detector_files()
+        except Exception:  # noqa: BLE001 - the detector still loads per call without it
+            log.warning("turn detector files could not be resolved at prewarm", exc_info=True)
     try:
         userdata["vad"] = build_vad(turn)
     except Exception:  # noqa: BLE001 - a cold VAD is better than a dead worker
@@ -525,4 +614,6 @@ __all__ = [
     "pipeline_for",
     "prewarm",
     "supported",
+    "turn_handling",
+    "llm_conn_options",
 ]

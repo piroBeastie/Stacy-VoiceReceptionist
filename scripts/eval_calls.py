@@ -72,9 +72,12 @@ def main() -> int:
         print(f"no archived calls in {args.calls!r}", file=sys.stderr)
         return 1
 
-    api_key = os.getenv("EVAL_API_KEY") or os.getenv("LLM_API_KEY")
+    # Never borrowed from LLM_API_KEY. The judge talks to EVAL_BASE_URL, a
+    # different vendor by default, and falling back sent the agent's Anthropic
+    # key to Groq as a bearer token.
+    api_key = os.getenv("EVAL_API_KEY")
     if not api_key:
-        print("EVAL_API_KEY not set", file=sys.stderr)
+        print("EVAL_API_KEY not set (it is never borrowed from LLM_API_KEY)", file=sys.stderr)
         return 1
     model = os.getenv("EVAL_MODEL", "claude-haiku-4-5")
     base_url = os.getenv("EVAL_BASE_URL", "https://api.groq.com/openai/v1")

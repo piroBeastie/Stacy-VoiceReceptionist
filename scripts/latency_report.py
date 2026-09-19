@@ -1,6 +1,18 @@
-"""Print the per-stage latency table that gates each build phase.
+"""Print the latency table that gates each build phase.
 
+    python scripts/latency_report.py --log captured.txt [--since 2026-09-11T13:00]
     python scripts/latency_report.py [trace_dir] [--tenant millbrook] [--since-calls 50]
+
+`--log` is the one that means something for a deployed worker. It reads the
+`latency {...}` lines the agent logs once per reply (capture them with
+`lk agent logs > captured.txt`) and reports caller-heard latency: from the moment
+the caller stopped speaking to the first audio of the reply. `--since` keeps only
+replies after a UTC time, which is how a fresh baseline starts at zero without
+deleting anything.
+
+The trace-directory mode reads the old JSONL stage marks. Those start 0.55s
+after the caller stopped and file tool round trips under text-to-speech; see
+stacy.metrics.live.
 
 Phase gates from the plan:
     Phase 2 baseline   -- record whatever it is, expect 1200-1800ms
@@ -12,23 +24,53 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from stacy.metrics import load_traces, summarize  # noqa: E402
+from stacy.metrics.live import parse_log, render_report  # noqa: E402
 
 PHASE4_P50_MS = 700
 PHASE4_P95_MS = 1100
 
 
+def _since(value: str) -> float:
+    """A UTC time as epoch seconds. A time without a zone is taken as UTC."""
+    when = datetime.fromisoformat(value)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return when.timestamp()
+
+
+def from_logs(paths: list[str], since: str | None) -> int:
+    lines: list[str] = []
+    for path in paths:
+        lines.extend(Path(path).read_text(encoding="utf-8", errors="replace").splitlines())
+    records = parse_log(lines)
+    if since:
+        cutoff = _since(since)
+        records = [r for r in records if isinstance(r.get("at"), (int, float)) and r["at"] >= cutoff]
+    if not records:
+        print(f"no latency lines in {paths}", file=sys.stderr)
+        return 1
+    print(render_report(records))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("trace_dir", nargs="?", default=os.getenv("STACY_TRACE_DIR", "data/traces"))
+    ap.add_argument("--log", action="append", metavar="FILE", help="Captured worker logs")
+    ap.add_argument("--since", help="With --log: only replies after this UTC time")
     ap.add_argument("--tenant", help="Filter to one tenant_id")
     ap.add_argument("--since-calls", type=int, help="Only the N most recent calls")
     ap.add_argument("--gate", action="store_true", help="Exit non-zero if Phase 4 targets miss")
     args = ap.parse_args()
+
+    if args.log:
+        return from_logs(args.log, args.since)
 
     records = load_traces(args.trace_dir)
     if args.tenant:

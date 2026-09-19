@@ -241,7 +241,9 @@ class TestAudioPath:
         # the suite, which teaches people to edit the test rather than read it.
         cfg = pipeline_for(millbrook)
         assert cfg.tts.voice_id == millbrook.voice_id
-        assert len(cfg.stt.keywords) == 17
+        # 16, not the original 17: "Casey" was dropped. Boosted, it turned a
+        # caller's "AC is not cooling" into "Casey is not cooling".
+        assert len(cfg.stt.keywords) == 16
 
     def test_delivery_comes_from_the_tenant_too(self, millbrook) -> None:
         # One client wants a brisk receptionist, another an unhurried one. That

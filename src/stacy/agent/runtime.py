@@ -29,7 +29,7 @@ from stacy.agent.slots import BookingSlots
 from stacy.delivery.webhook import call_payload
 from stacy.desk.calendar import Appointment, CalendarStore
 from stacy.desk.messages import Message, MessageStore
-from stacy.metrics import NullSink, Stage, TraceSink, TurnTrace
+from stacy.metrics import CallLatency, NullSink, Stage, TraceSink, TurnTrace
 from stacy.prompt import PromptBuilder
 from stacy.providers.base import PipelineConfig
 from stacy.providers.registry import pipeline_for
@@ -59,6 +59,18 @@ class CallRuntime:
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
 
     system_prompt: str = ""
+
+    instructions: str = ""
+    """The system prompt minus its `# This call` section: byte-identical on every call.
+
+    Sent as the agent's instructions. Measured against the live API, a prompt
+    carrying the caller's number and the minute read 0 of 7,692 tokens from cache
+    on every new call; without them the stable prefix is shared between calls.
+    """
+
+    call_section: str = ""
+    """The filled `# This call` section, sent in the call's first message instead."""
+
     started_at: float = field(default_factory=time.monotonic)
     turn_index: int = 0
     outcome: Outcome = "answered"
@@ -80,6 +92,29 @@ class CallRuntime:
     slots: BookingSlots = field(default_factory=BookingSlots)
     """Working memory for the booking. Callers give three fields in one breath;
     this is where they land so the agent never asks for one of them twice."""
+
+    latency: CallLatency = field(default_factory=CallLatency)
+    """Caller-heard response times, from the SDK's own timestamps. See
+    :mod:`stacy.metrics.live` for why these replace the stage marks."""
+
+    last_caller_turn: str = ""
+    """What the caller said in their previous turn, for a number read over two."""
+
+    desk_reply: tuple[str, str] | None = None
+    """(the caller's words, the reply) for a turn answered without the model.
+
+    Set when the caller's turn is committed and spoken by the next generation;
+    see :mod:`stacy.agent.fastlane`.
+    """
+
+    fixed_now: datetime | None = None
+    """The clock the desk tools book against, pinned. None is the real time.
+
+    Tests pin it; production never does. Before this, the tools read the wall
+    clock while the tests assumed a Monday, so every booking test that said
+    "tomorrow" failed on Fridays -- when tomorrow is a Saturday nothing can be
+    booked on.
+    """
 
     _trace: TurnTrace | None = None
 
@@ -105,6 +140,7 @@ class CallRuntime:
         prompt = builder.fill_runtime(
             builder.render(tenant), now=stamp, caller_id=caller_id
         )
+        stable, marker, per_call = prompt.partition("\n# This call")
         runtime = cls(
             tenant=tenant,
             call_id=call_id,
@@ -114,8 +150,12 @@ class CallRuntime:
             messages=messages,
             pipeline=cfg,
             system_prompt=prompt,
+            instructions=stable.rstrip() + "\n",
+            call_section=(marker + per_call).strip(),
             backchannel=BackchannelFilter(max_words=cfg.turn.interrupt_min_words),
             filler=FillerPolicy(cfg=cfg.filler),
+            latency=CallLatency(call_id=call_id),
+            fixed_now=now,
         )
         log.info(
             "call %s -> tenant=%s prompt=%d chars caller=%s",
@@ -159,28 +199,16 @@ class CallRuntime:
             self._trace.annotate(**meta)
 
     def flush_turn(self) -> None:
-        """Emit the open trace, if any, and close it.
+        """Emit the open trace to the sink, if any, and close it.
 
-        The trace also goes to the log, not only to the sink. The sink writes
-        JSONL to a path inside the worker, which on hosted infrastructure is an
-        ephemeral container nobody can read -- so on the first real call the
-        entire latency harness produced numbers that existed for the lifetime of
-        the process and then vanished. A one-line summary per turn means the
-        headline figure survives in `lk agent logs` wherever the worker runs.
+        This no longer logs a headline number. The `turn ... response_ms=` line
+        it used to print started 0.55s after the caller stopped and filed tool
+        round trips under text-to-speech; the caller-heard figures are logged
+        from :attr:`latency` instead.
         """
         if self._trace is None:
             return
         self.sink.emit(self._trace)
-
-        response = self._trace.response_ms
-        if response is not None:
-            spans = self._trace.spans()
-            log.info(
-                "turn %s response_ms=%.0f %s",
-                self.call_id,
-                response,
-                " ".join(f"{k}={v:.0f}" for k, v in spans.items()),
-            )
         self._trace = None
 
     @property
@@ -259,6 +287,10 @@ class CallRuntime:
         self.message = msg
         if self.outcome == "answered":
             self.outcome = "message"
+
+    def now(self) -> datetime:
+        """The time the desk tools book against, in the tenant's timezone."""
+        return self.fixed_now or datetime.now(ZoneInfo(self.tenant.timezone))
 
     @property
     def duration_s(self) -> float:

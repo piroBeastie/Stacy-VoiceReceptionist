@@ -15,8 +15,9 @@ odd -- it put [slow] on an address in testing -- becomes harmless.
 
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import AsyncIterable, AsyncIterator
+from typing import Any, AsyncIterable, AsyncIterator
 
 _TAG = re.compile(r"\[[A-Za-z][A-Za-z ]{0,30}\]")
 """A voice cue: a bracketed word or two. "[1]" is not one and is left alone."""
@@ -53,3 +54,38 @@ async def strip_audio_tags_stream(chunks: AsyncIterable[str]) -> AsyncIterator[s
             yield _RUNS_OF_SPACES.sub(" ", ready)
     if pending:
         yield _RUNS_OF_SPACES.sub(" ", pending)
+
+
+SENTENCE_END = (".", "?", "!")
+
+
+async def push_with_flush(chunks: AsyncIterable[str], stream: Any, *, stall_s: float = 0.12) -> None:
+    """Push the model's text into a TTS stream, flushing a finished sentence when the text stalls.
+
+    A short reply followed by a tool call -- "Got it. What town are you in?" and
+    then record_details -- sat unspoken while the model wrote the tool call: the
+    voice only starts a sentence once it has the next one, or the end of the
+    text. Measured against ElevenLabs, first audio came 630 ms after the text;
+    flushed after a 120 ms stall, 300 ms. Text that keeps coming is never
+    flushed, so a long reply is unchanged.
+    """
+    it = chunks.__aiter__()
+    tail = ""
+    while True:
+        nxt = asyncio.ensure_future(anext(it))
+        try:
+            if tail.endswith(SENTENCE_END):
+                done, _ = await asyncio.wait({nxt}, timeout=stall_s)
+                if not done:
+                    stream.flush()
+                    tail = ""
+            chunk = await nxt
+        except StopAsyncIteration:
+            break
+        except BaseException:
+            nxt.cancel()
+            raise
+        stream.push_text(chunk)
+        if chunk.strip():
+            tail = chunk.rstrip()
+    stream.end_input()
