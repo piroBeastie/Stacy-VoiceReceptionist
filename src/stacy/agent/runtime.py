@@ -100,8 +100,28 @@ class CallRuntime:
     last_caller_turn: str = ""
     """What the caller said in their previous turn, for a number read over two."""
 
+    early_desk: tuple[str, str] | None = None
+    """(the caller's words, the reply) a desk reply voiced before the turn was confirmed.
+
+    The SDK starts replying on the caller's words before it is sure they have
+    finished; a desk reply decided then has its audio built by the time they
+    are. Checked against the confirmed turn in the hook, and thrown away if it
+    no longer fits.
+    """
+
+    kept_note: tuple[str, str] | None = None
+    """(the caller's words, the note) for a kept early desk reply.
+
+    Keeping the early reply means leaving the caller's message untouched, so its
+    note is added once the SDK has filed the message; see entrypoint._on_item.
+    Without it the model never saw that the desk had booked, and could book again.
+    """
+
+    settled_turn: str = ""
+    """The id of the caller's message the hook last ran for: a pass on it is not early any more."""
+
     desk_reply: tuple[str, str] | None = None
-    """(the caller's words, the reply) for a turn answered without the model.
+    """(the caller's message id, the reply) for a turn answered without the model.
 
     Set when the caller's turn is committed and spoken by the next generation;
     see :mod:`stacy.agent.fastlane`.

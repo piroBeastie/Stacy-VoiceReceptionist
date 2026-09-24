@@ -63,3 +63,30 @@ class TestStreamedText:
         # Held back only until it cannot be a tag. It must still be spoken.
         text = "[" + "x" * 40
         assert _streamed([text[:10], text[10:]]) == text
+
+
+class TestMarkdown:
+    """Stripped without holding anything back: the SDK's own filter held the last word."""
+
+    def test_markdown_is_removed(self) -> None:
+        assert strip_audio_tags("**Got it** -- what `town` are you in?") == "Got it -- what town are you in?"
+
+    def test_the_last_word_is_released_with_its_chunk(self) -> None:
+        async def run() -> list[str]:
+            async def source():
+                for chunk in ["What town", " are you in?"]:
+                    yield chunk
+                await asyncio.sleep(3600)  # the model writing its tool call
+
+            out: list[str] = []
+            gen = strip_audio_tags_stream(source()).__aiter__()
+            for _ in range(2):
+                out.append(await asyncio.wait_for(gen.__anext__(), 1))
+            return out
+
+        assert "".join(asyncio.run(run())) == "What town are you in?"
+
+    def test_the_voice_skips_the_sdks_markdown_filter(self) -> None:
+        from stacy.agent.speech import TTS_TEXT_TRANSFORMS
+
+        assert "filter_markdown" not in TTS_TEXT_TRANSFORMS and "filter_emoji" in TTS_TEXT_TRANSFORMS

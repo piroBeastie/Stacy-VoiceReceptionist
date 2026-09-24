@@ -34,8 +34,8 @@ Twilio Elastic SIP Trunk
    +----+--------+-----------+------------+----------+
    |    |        |           |            |          |
   VAD  Turn     STT         LLM          TTS       Tools
-Silero detector Deepgram   Qwen3/Groq   Flash v2.5  desk/
-       (EOU)    Nova-3                  or Cartesia
+Silero detector Deepgram   Claude       ElevenLabs  desk/
+       (EOU)    Nova-3     Haiku 4.5    Flash v2.5
 ```
 
 Audio stays at **8kHz** end to end. Every resample costs 20–50ms and some
@@ -468,8 +468,10 @@ suggestion to a model and these are not suggestions:
 
 ## Choosing a model
 
-The default is **Claude Sonnet 5**, with a fast open-weight model on Groq behind
-it as the cascade fallback.
+The default is **Claude Haiku 4.5**. No fallback model is configured: the
+cascade exists (`LLM_FALLBACK_*`) and is unset, because every open-weight model
+measured against this prompt was either slower or not careful enough. See
+`docs/how-stacy-works.md` for the bake-off numbers.
 
 Two decisions get confused here. The *host* sets time to first token — the same
 open weights on Groq or Cerebras versus a general cloud is roughly 150ms against

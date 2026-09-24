@@ -64,13 +64,37 @@ class STTConfig:
     """
 
     audio_format: AudioFormat = TELEPHONY_FORMAT
+    """The format on the wire from Twilio. Not what reaches Deepgram: the plugin
+    hard-codes `encoding=linear16` and has no parameter for anything else, so
+    LiveKit expands mu-law to 16-bit PCM first. At the same sample rate that
+    expansion is lossless and costs no resample, which is why `sample_rate`
+    below is the setting that matters."""
+
     sample_rate: int = TELEPHONY_SAMPLE_RATE
-    """Passed explicitly. Left to default, the plugin upsamples to 16k PCM and
-    the 'mu-law end to end' claim quietly stops being true on the input leg."""
+    """Passed explicitly. Left to default the plugin says 16k, and LiveKit
+    resamples the 8k line up to meet it -- a transcode that buys nothing."""
 
     endpointing_ms: int = 25
     """Vendor-side silence before Deepgram flushes a final. Kept low because the
     semantic turn detector, not the vendor, owns the endpointing decision."""
+
+    patient_endpointing_ms: int = 0
+    """Vendor-side silence for a question answered in pieces: a name spelled out,
+    a number or an address. 0 leaves it alone.
+
+    Deepgram's own guidance is 300-500 ms "for conversations where speakers pause
+    mid-thought", against the 10 ms it suggests for short answers. Spelling a
+    name is that case exactly: at 25 ms the gap between letters flushes a final,
+    and a live call had "N A N A K" arrive as "N a n" then "k" and get recorded
+    as Nank. The turns this applies to are the ones :func:`answer_kind` already
+    calls patient, and they already wait 0.45s for the caller, so a later final
+    costs nothing there.
+
+    Off by default because changing it mid-call reconnects Deepgram's websocket
+    (`update_options` sets the reconnect event immediately), and a caller who
+    talks over the agent during that reconnect can lose their first word. Turn it
+    on once a shadow run shows the longer wait actually hears the letters: see
+    :mod:`stacy.bench.shadow_stt`."""
 
     utterance_end_ms: int = 1000
     """Vendor-side UtteranceEnd signal. A backstop for a missed final, not the
@@ -326,6 +350,20 @@ class TurnConfig:
     transcript (170-310 ms after speech ends) becomes the wait instead.
     """
 
+    vad_patient_silence_s: float = 0.45
+    """The wait after asking for a phone number, a street or a name.
+
+    Callers read those out in groups -- "double nine... double eight..." -- and
+    stopping them mid-number is the rudest thing a receptionist can do. Set per
+    turn from what the agent just asked; see fastlane.answer_kind.
+    """
+
+    vad_eager_silence_s: float = 0.20
+    """The wait after a yes-or-no where committing early is cheap: the text consent
+    (not straight after digits read back) and "Anything else before I let you go?".
+    Never the read-back: a yes there books, and "Yeah, but the street's wrong" has
+    to be heard out."""
+
     use_semantic_endpointing: bool = True
     min_endpointing_delay_s: float = 0.2
     """Wait after an utterance the detector judges complete.
@@ -336,12 +374,16 @@ class TurnConfig:
     and reads as far less human than the 80ms it saved.
     """
 
-    max_endpointing_delay_s: float = 2.0
+    max_endpointing_delay_s: float = 1.2
     """Ceiling when the detector judges the caller is mid-thought.
 
-    Down from 2.5: on measured calls the slowest reply in ten sat exactly on
-    this ceiling, after half-finished sentences and pauses between groups of
-    digits. Two seconds still covers a caller reading out a number.
+    Down from 2.0, which was down from 2.5. On the 2026-09-20 call the two
+    slowest replies of twelve sat exactly on the two-second ceiling -- "Yes.
+    This is this" and "It is", both judged mid-sentence -- and cost 2.0s each
+    against 240-500 ms for every other turn. The ceiling only applies when the
+    detector thinks more is coming, so the cost of lowering it is cutting off a
+    caller who really was still talking; the patient 0.45s wait after a number,
+    a name or an address is the separate guard against that.
     """
 
     preemptive_generation: bool = True
@@ -386,7 +428,7 @@ class TurnConfig:
     """Keep transcribing speech that is not allowed to interrupt, so it carries
     into the next turn instead of being discarded."""
 
-    noise_commit_after_s: float = 1.5
+    noise_commit_after_s: float = 1.2
     """Answer anyway once background noise is what holds the caller's turn open.
 
     A final transcript ends a turn only when voice detection says the caller has
@@ -397,9 +439,10 @@ class TurnConfig:
     waiting, the turn is committed. It sits under the semantic detector's own
     worst-case wait, so a noisy line is never slower than a quiet one would be.
 
-    Down from 2.0: on a live call a noisy line left the agent silent longer
-    than a quiet line ever does. Not lower, because a caller pausing to think on
-    a noisy line would be cut off instead, which is no more human."""
+    Down from 2.0, then to 1.2 with `max_endpointing_delay_s`, which it tracks:
+    on a live call a noisy line left the agent silent longer than a quiet line
+    ever does. Not lower on its own, because a caller pausing to think on a
+    noisy line would be cut off instead, which is no more human."""
 
     turn_timeout_s: float = 9.0
     """Silence before the agent re-engages. The prompt tells it to ask 'Still

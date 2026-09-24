@@ -241,9 +241,14 @@ class TestAudioPath:
         # the suite, which teaches people to edit the test rather than read it.
         cfg = pipeline_for(millbrook)
         assert cfg.tts.voice_id == millbrook.voice_id
-        # 16, not the original 17: "Casey" was dropped. Boosted, it turned a
-        # caller's "AC is not cooling" into "Casey is not cooling".
-        assert len(cfg.stt.keywords) == 16
+        # Whatever the tenant lists, unabridged. "Casey" is deliberately not in
+        # it: boosted, it turned a caller's "AC is not cooling" into "Casey is
+        # not cooling".
+        assert len(cfg.stt.keywords) == len(millbrook.asr_keywords)
+        assert "Casey" not in cfg.stt.keywords
+        # The words a caller says on every HVAC call, boosted by name: live calls
+        # heard "furnace" as "a button" and as "Furnished".
+        assert {"furnace", "boiler", "thermostat", "water heater"} <= set(cfg.stt.keywords)
 
     def test_delivery_comes_from_the_tenant_too(self, millbrook) -> None:
         # One client wants a brisk receptionist, another an unhurried one. That

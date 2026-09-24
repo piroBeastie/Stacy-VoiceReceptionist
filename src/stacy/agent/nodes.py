@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any, AsyncIterable, AsyncIterator
 
@@ -39,6 +40,8 @@ from stacy.agent.slots import (
     readback_note,
 )
 from stacy.agent.speech import push_with_flush, strip_audio_tags_stream
+from stacy.bench.shadow_stt import build as build_shadows
+from stacy.bench.shadow_stt import specs as shadow_specs
 from stacy.agent.tools import DeskOperations, build_function_tools
 from stacy.metrics import Stage
 
@@ -87,8 +90,12 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
             """
             text = getattr(new_message, "text_content", None) or ""
             runtime.desk_reply = None
+            early, runtime.early_desk = runtime.early_desk, None
             if not text:
                 return
+            turn = str(getattr(new_message, "id", "") or "")
+            runtime.settled_turn = turn
+            voiced_early = early is not None and _same_words(early[0], text)
             reply = desk_reply(runtime, text)
             if reply is not None and reply.action == "book":
                 # A yes to the read-back. Booked here, and the desk's line is
@@ -103,6 +110,8 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                     (time.perf_counter() - started) * 1000,
                 )
                 if not result.startswith("Booked"):
+                    # This also discards an early "You're all set", voiced
+                    # before the calendar had its say.
                     runtime.last_caller_turn = text
                     new_message.content.append(
                         "(Not said by the caller: they said yes to the read-back, so the booking "
@@ -110,15 +119,31 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                     )
                     return
             if reply is not None:
-                # A turn with one right reply; see stacy.agent.fastlane. The note
-                # changes the message, which discards the model's preemptive
-                # reply, so the desk's is the one spoken.
+                # A turn with one right reply; see stacy.agent.fastlane.
                 runtime.slots.update(**reply.record)
                 runtime.last_caller_turn = text
-                runtime.desk_reply = (text, reply.speech)
+                runtime.latency.on_desk_reply()
+                # Also what a pass the SDK regenerates speaks, if it drops the
+                # early one: the same words get the same line, never the model.
+                runtime.desk_reply = (turn, reply.speech)
+                if voiced_early and early is not None and early[1] == reply.speech:
+                    # Decided and voiced before the turn was confirmed: its audio
+                    # is ready and plays now. The message is left alone, because
+                    # changing it is what makes the SDK throw an early reply away;
+                    # its note goes on once the SDK has filed it (entrypoint).
+                    runtime.kept_note = (text, reply.note)
+                    runtime.mark(Stage.LLM_FIRST_TOKEN, desk_reply=True)
+                    log.info("call %s: desk reply ready early, recorded %s", runtime.call_id, reply.record)
+                    return
+                # Otherwise the note changes the message, which discards whatever
+                # was started early, and the desk's reply is spoken instead.
                 new_message.content.append(reply.note)
                 log.info("call %s: desk reply, recorded %s", runtime.call_id, reply.record)
                 return
+            if voiced_early:
+                # A desk reply was voiced early that the confirmed turn no longer
+                # supports. Changing the message throws that audio away.
+                new_message.content.append("(Not said by the caller: answer this turn yourself.)")
             notes: list[str] = []
             spelled = name_spelled(runtime, text)
             if spelled:
@@ -160,11 +185,37 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
             new_message.content.extend(notes)
 
         async def stt_node(self, audio: Any, model_settings: Any) -> Any:
-            """Pass audio through, marking the first final transcript."""
-            async for event in super().stt_node(audio, model_settings):
-                if getattr(event, "type", None) is not None and _is_final(event):
-                    runtime.mark(Stage.STT_FINAL)
-                yield event
+            """Pass audio through, marking the first final transcript.
+
+            When `STACY_SHADOW_STT` names any, the same frames also go to shadow
+            transcribers whose transcripts are only logged -- the way to compare
+            recognisers on the caller's own voice rather than on synthesised
+            speech. See :mod:`stacy.bench.shadow_stt`.
+            """
+            shadows: list[Any] = []
+            if shadow_specs():
+                try:
+                    shadows = await build_shadows(runtime.pipeline.stt, runtime.call_id)
+                except Exception:  # noqa: BLE001 - a shadow never disturbs the call
+                    log.exception("call %s: shadow transcribers could not start", runtime.call_id)
+
+            async def heard(frames: Any) -> Any:
+                async for frame in frames:
+                    for shadow in shadows:
+                        try:
+                            shadow.push(frame)
+                        except Exception:  # noqa: BLE001, S110 - same
+                            pass
+                    yield frame
+
+            try:
+                async for event in super().stt_node(heard(audio) if shadows else audio, model_settings):
+                    if getattr(event, "type", None) is not None and _is_final(event):
+                        runtime.mark(Stage.STT_FINAL)
+                    yield event
+            finally:
+                for shadow in shadows:
+                    await shadow.aclose()
 
         async def llm_node(self, chat_ctx: Any, tools: Any, model_settings: Any) -> Any:
             """Stream the model, marking when it commits and when it first speaks.
@@ -201,15 +252,32 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                 return
 
             # A reply the desk already wrote for this turn: spoken as it is, and
-            # the model is not called. Matched to the caller's words, so a reply
-            # whose turn was cut short can never be spoken on the next one.
+            # the model is not called. Matched to the caller's message itself, not
+            # its words: review found a kept "You're all set" replayed on a later
+            # "Yes." that no VAD event had separated from the first.
             pending = runtime.desk_reply
-            if pending is not None and spoken and pending[0].strip() in spoken:
+            if pending is not None and pending[0] and pending[0] == _last_caller_id(chat_ctx):
                 runtime.desk_reply = None
                 runtime.mark(Stage.LLM_FIRST_TOKEN, desk_reply=True)
-                runtime.latency.on_desk_reply()
                 yield pending[1]
                 return
+
+            # Earlier still: the SDK runs this node on the caller's words before
+            # it is sure they have finished, and builds the voice from what comes
+            # out. A turn with one right reply is decided here, so its audio is
+            # ready the moment they are judged done -- no model, no wait for the
+            # voice. Only on a pass that answers the caller directly (never the
+            # pass after a tool call, which would say it twice), and only before
+            # the hook has settled this turn. The hook checks it against the
+            # confirmed words and throws it away if anything changed.
+            if spoken and _ends_with_caller(chat_ctx) and _last_caller_id(chat_ctx) != runtime.settled_turn:
+                early = desk_reply(runtime, spoken)
+                if early is not None:
+                    # Not marked on the trace here: this can run before the
+                    # turn's trace opens, and the reply may yet be thrown away.
+                    runtime.early_desk = (spoken, early.speech)
+                    yield early.speech
+                    return
 
             # Every model pass is logged with what came first. A pass that writes a
             # tool call before any words costs its whole length before the caller
@@ -220,6 +288,7 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
             tool_ms: float | None = None
             chars = 0
             called: list[str] = []
+            usage: Any = None
             async for chunk in super().llm_node(chat_ctx, tools, model_settings):
                 if first:
                     runtime.mark(Stage.LLM_FIRST_TOKEN)
@@ -227,6 +296,7 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                 delta = getattr(chunk, "delta", None)
                 content = chunk if isinstance(chunk, str) else getattr(delta, "content", None)
                 calls = getattr(delta, "tool_calls", None) or []
+                usage = getattr(chunk, "usage", None) or usage
                 elapsed = (time.perf_counter() - started) * 1000
                 if content:
                     chars += len(content)
@@ -249,6 +319,9 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
                 "total_ms": round((time.perf_counter() - started) * 1000),
                 "chars": chars,
                 "tools": called,
+                # A cold cache is the first suspect when a reply is slow.
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "cached_tokens": getattr(usage, "prompt_cached_tokens", None),
             }))
 
         async def tts_node(self, text: AsyncIterable[str], model_settings: Any) -> Any:
@@ -288,6 +361,49 @@ async def _synthesize(tts: Any, text: AsyncIterable[str], conn_options: Any) -> 
                 yield ev.frame
         finally:
             await utils.aio.cancel_and_wait(push)
+
+
+_NOTE = re.compile(r"\(Not said by the caller:.*?\)", re.S)
+
+
+def _same_words(a: str, b: str) -> bool:
+    """Whether two transcripts say the same words, ignoring case, punctuation and notes.
+
+    Notes the hook attached to a message are not the caller's words. Anything
+    else is: "Tomorrow." and "Tomorrow, 11 to 2." are different turns.
+    """
+    def key(s: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9']+", _NOTE.sub(" ", s or "").lower()))
+
+    ka = key(a)
+    return bool(ka) and ka == key(b)
+
+
+def _ends_with_caller(chat_ctx: Any) -> bool:
+    """Whether the context ends on the caller's message -- the pass that answers them.
+
+    The pass after a tool call ends on the tool's output instead.
+    """
+    items = getattr(chat_ctx, "items", None) or getattr(chat_ctx, "messages", None) or []
+    items = list(items)
+    if not items:
+        return False
+    last = items[-1]
+    return getattr(last, "type", "message") == "message" and getattr(last, "role", None) == "user"
+
+
+def _last_caller_id(chat_ctx: Any) -> str:
+    """The id of the message the context ends on, when that is the caller's; '' otherwise.
+
+    The SDK files a preemptive pass's message under a new id and the confirmed
+    turn's under another, which it keeps when it regenerates after the hook. So
+    the id tells the hook's own turn apart from an early pass, and from any later
+    turn with the same words.
+    """
+    if not _ends_with_caller(chat_ctx):
+        return ""
+    items = list(getattr(chat_ctx, "items", None) or getattr(chat_ctx, "messages", None) or [])
+    return str(getattr(items[-1], "id", "") or "")
 
 
 def _last_user_text(chat_ctx: Any) -> str:

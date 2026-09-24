@@ -20,6 +20,7 @@ import importlib
 import inspect
 import logging
 import os
+import time
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -162,6 +163,10 @@ def build_stt(cfg: STTConfig) -> Any:
             "interim_results": cfg.interim_results,
             "sample_rate": cfg.sample_rate,
             "endpointing_ms": cfg.endpointing_ms,
+            # Configured since the first version and never passed, so no
+            # UtteranceEnd has ever been requested on any call: a final the
+            # vendor dropped had no backstop at all.
+            "utterance_end_ms": cfg.utterance_end_ms,
             "numerals": cfg.numerals,
             "filler_words": cfg.filler_words,
         }
@@ -529,6 +534,56 @@ def turn_handling(cfg: TurnConfig, turn_detector: Any | None) -> dict[str, Any]:
     }
 
 
+def warm_llm_cache(cfg: LLMConfig, instructions: str, tools: list[Any]) -> dict[str, Any] | None:
+    """Write the model's prompt cache while the greeting plays, so the first reply reads it.
+
+    Anthropic's cache lasts five minutes. On a live call after a quiet spell the
+    first reply paid for the whole cold prompt: 1,877 ms to its first word,
+    against 520-1,100 ms for every reply after it. A `max_tokens: 0` request
+    runs only the prefill -- writing the cache -- and returns at once, billing
+    no output. It has to send the exact prefix the plugin sends: the same tools
+    in the same order with the same schema flags, and the instructions as the
+    one system block, each marked as a cache breakpoint.
+
+    Synchronous on purpose: run it in a thread. Building the client and parsing
+    the tool schemas both block, and on the agent's event loop that is audio.
+    """
+    if cfg.vendor != "anthropic" or not cfg.caching:
+        return None
+    key = os.environ.get(cfg.api_key_env, "").strip()
+    if not key:
+        return None
+    import anthropic  # noqa: PLC0415
+    from livekit.agents import llm as agents_llm  # noqa: PLC0415
+
+    schemas = (
+        agents_llm.ToolContext(tools).parse_function_tools("anthropic", strict=cfg.strict_tool_schema)
+        if tools
+        else []
+    )
+    request: dict[str, Any] = {
+        "model": cfg.model,
+        "max_tokens": 0,
+        "system": [{"type": "text", "text": instructions, "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": "warmup"}],
+    }
+    if schemas:
+        schemas[-1] = {**schemas[-1], "cache_control": {"type": "ephemeral"}}
+        request["tools"] = schemas
+    client = anthropic.Anthropic(api_key=key, max_retries=0, timeout=max(cfg.timeout_s * 2, 5.0))
+    started = time.perf_counter()
+    try:
+        response = client.messages.create(**request)
+    finally:
+        client.close()
+    usage = getattr(response, "usage", None)
+    return {
+        "ms": round((time.perf_counter() - started) * 1000),
+        "written": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        "read": getattr(usage, "cache_read_input_tokens", 0) or 0,
+    }
+
+
 def llm_conn_options(cfg: LLMConfig) -> Any:
     """How long one model request may hang before it is abandoned and retried.
 
@@ -616,4 +671,5 @@ __all__ = [
     "supported",
     "turn_handling",
     "llm_conn_options",
+    "warm_llm_cache",
 ]

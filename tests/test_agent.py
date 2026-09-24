@@ -554,6 +554,36 @@ class TestNothingIsBookedBeforeTheCallerHearsItBack:
         runtime.record_user("Yes. That's exactly how I like it.")
         assert DeskOperations(runtime).book_appointment().startswith("Booked")
 
+    def test_a_no_to_the_read_back_books_nothing(self, runtime: CallRuntime) -> None:
+        # Replayed against the model: "No that's all." after the read-back, and it
+        # booked anyway and said "You're all set".
+        self._ready(runtime)
+        runtime.record_agent(
+            "So that's Dan, 14 Elm Street in Wallingford, no heat, tomorrow, "
+            "eleven to two. Does that all sound right?"
+        )
+        runtime.record_user("No that's all.")
+        said = DeskOperations(runtime).book_appointment()
+        assert said.startswith("Not yet") and not runtime.appointments
+
+    def test_a_correction_to_the_read_back_books_nothing(self, runtime: CallRuntime) -> None:
+        self._ready(runtime)
+        runtime.record_agent(
+            "So that's Dan, 14 Elm Street in Wallingford, no heat, tomorrow, "
+            "eleven to two. Does that all sound right?"
+        )
+        runtime.record_user("Yeah, but the street's wrong, it's Elm Court.")
+        assert DeskOperations(runtime).book_appointment().startswith("Not yet")
+        assert not runtime.appointments
+
+    def test_the_on_call_tech_is_sent_once(self, runtime: CallRuntime) -> None:
+        # Replayed: the model called dispatch twice and two techs were sent to one house.
+        self._ready(runtime)
+        ops = DeskOperations(runtime)
+        assert ops.dispatch_emergency().startswith("On-call tech dispatched")
+        again = ops.dispatch_emergency()
+        assert again.startswith("Already sent") and len(runtime.appointments) == 1
+
     def test_a_read_back_of_a_window_since_changed_does_not_count(
         self, runtime: CallRuntime
     ) -> None:

@@ -152,7 +152,17 @@
     "Cheshire",
     "Hamden",
     "North Haven",
-    "Miles"
+    "Miles",
+    "furnace",
+    "boiler",
+    "thermostat",
+    "heat pump",
+    "mini split",
+    "air conditioner",
+    "water heater",
+    "no heat",
+    "not cooling",
+    "pilot light"
   ],
   "demo_mode": true,
   "reseller": {

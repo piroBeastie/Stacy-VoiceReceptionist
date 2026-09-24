@@ -48,6 +48,12 @@ except ImportError:  # the desk logic and its tests do not need the SDK
 
 log = logging.getLogger("stacy.agent.tools")
 
+_CORRECTION = re.compile(
+    r"\b(?:wrong|not right|isn'?t right|actually|instead|change|different|mistake|mixed up"
+    r"|that'?s not|it'?s not)\b",
+    re.I,
+)
+"""Words that answer a read-back with a fix rather than a yes."""
 _STREET_WORDS = re.compile(
     r"\b(street|st|road|rd|avenue|ave|lane|ln|drive|court|ct|place|way|boulevard|blvd"
     r"|circle|terrace|highway|route|parkway|pike)\b",
@@ -473,6 +479,43 @@ class DeskOperations:
 
     # ---- writing ---------------------------------------------------------
 
+    def _booked_already(self) -> Any:
+        """The appointment this call already made for the visit now recorded, if any.
+
+        The same visit is the same name, street, day and window. Review: matching
+        without the day refused a real second visit, Thursday after tomorrow.
+        """
+        slots = self.runtime.slots
+        if not slots.day:
+            return None
+        try:
+            day = resolve_day(self._tenant, slots.day, now=self.runtime.now()).isoformat()
+        except BookingError:
+            return None
+        visit = (slots.customer_name, slots.street_address, day, slots.window)
+        for booked in self.runtime.appointments:
+            fields = ("customer_name", "street_address", "day", "window_label")
+            if tuple(getattr(booked, f, None) for f in fields) == visit:
+                return booked
+        return None
+
+    def _turned_the_read_back_down(self) -> str:
+        """The caller's last words, when they are a no or a correction rather than a yes.
+
+        A booking is the one thing that cannot be taken back on the call, so it
+        waits for a plain yes. Anything unclear is left to the model, which has
+        the conversation; only a refusal stops it here.
+        """
+        from stacy.agent.fastlane import _yes_no  # noqa: PLC0415 - avoids an import cycle
+
+        said = [t.get("text", "") for t in self.runtime.transcript if t.get("role") == "user"]
+        last = (said[-1] if said else "").strip()
+        if not last:
+            return ""
+        if _yes_no(last) is False or _CORRECTION.search(last):
+            return last[:80]
+        return ""
+
     def book_appointment(self, **heard: object) -> str:
         """Commit the booking that has been assembled so far.
 
@@ -488,6 +531,18 @@ class DeskOperations:
 
         slots = self.runtime.slots
         slots.update(**heard)
+        booked = self._booked_already()
+        if booked is not None:
+            # The desk books on a yes to the read-back. A model that books the
+            # same visit again would double it, or be told the window just filled.
+            # A second visit on another day is a real second booking.
+            now = self.runtime.now()
+            when = _day_name(Date.fromisoformat(booked.day), now.date())
+            return (
+                f"Booked already, earlier in this call: {booked.customer_name}, "
+                f"{booked.street_address}, {when}, {booked.window_label}. "
+                "It's done -- don't book it again."
+            )
         if not slots.check_town(self._tenant):
             return f"{slots.rejected_town} is outside the service area — don't book it."
         if not slots.complete:
@@ -496,6 +551,15 @@ class DeskOperations:
             return (
                 "Not yet: read it all back first -- name, address, problem, day and window -- "
                 "and call book_appointment again once they say yes. Nothing is booked yet, so "
+                "don't tell them they're booked or all set."
+            )
+        turned_down = self._turned_the_read_back_down()
+        if turned_down:
+            # Replayed against the model: the read-back was answered "No that's
+            # all" and it booked anyway, saying "You're all set".
+            return (
+                f"Not yet: their answer to the read-back was {turned_down!r}, which isn't a yes. "
+                "Ask what needs changing, fix it, and read it back again. Nothing is booked, so "
                 "don't tell them they're booked or all set."
             )
 
@@ -553,6 +617,14 @@ class DeskOperations:
             return "I can't reach dispatch. Take their details and flag it urgent."
 
         slots = self.runtime.slots
+        sent = next((a for a in self.runtime.appointments if a.window_label == "dispatch"), None)
+        if sent is not None:
+            # Replayed: the model called this twice in one turn and two techs
+            # were sent to the same house.
+            return (
+                f"Already sent, earlier in this call: the on-call tech is on the way to "
+                f"{sent.street_address}, {sent.town}. Don't send anyone again."
+            )
         slots.update(**heard)
         needed = [f for f in ("customer_name", "phone", "street_address", "town", "problem")
                   if not getattr(slots, f)]
@@ -728,8 +800,10 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
             street_address: House number and street, or null.
             town: The town, or null.
             problem: One line on what is wrong, or null.
-            system_type: Furnace, boiler, air conditioner, mini-split, heat pump, or null.
-            fuel: Gas or electric, or null. Only ever for a furnace or a boiler.
+            system_type: Furnace, boiler, air conditioner, mini-split, heat pump, or null
+                (null too when they don't know it).
+            fuel: Gas, electric, oil or propane; "unknown" if they don't know; or null.
+                Only ever for a furnace or a boiler.
             day: "today", "tomorrow", a weekday name, or null.
             window: One of the arrival windows you have offered, or null.
             sms_consent: True only if they said yes to the text consent question,

@@ -141,7 +141,7 @@ class TestANameOrAddress:
         reply = _turn(runtime, "And what's the street address there?", "123 Coffey Street.")
         assert reply is not None
         assert reply.record == {"street_address": "123 Coffey Street"}
-        assert reply.speech == "Perfect. And what town is that in?"
+        assert reply.speech == "Okay, 123 Coffey Street. And what town is that in?"
 
     def test_a_street_and_served_town_are_both_recorded(self, runtime) -> None:
         runtime.slots.town = ""
@@ -154,7 +154,8 @@ class TestANameOrAddress:
         runtime.slots.town = ""
         assert _turn(runtime, "And what's your address?", "12 Main Street in New Haven") is None
 
-    def test_the_window_and_the_read_back_stay_with_the_model(self, runtime) -> None:
+    def test_after_the_street_offering_a_time_is_the_models(self, runtime) -> None:
+        # The first offer of a time is where an emergency is dispatched instead.
         runtime.slots.update(customer_name="Nanak", phone="+12035550199", sms_consent=True)
         assert _turn(runtime, "And what's the street address there?", "123 Coffey Street.") is None
 
@@ -241,8 +242,13 @@ class TestTheWindowAndTheBooking:
     def test_anything_else_about_a_window_goes_to_the_model(self, ready, caller) -> None:
         assert _turn(ready, "Tomorrow I've got eleven to two, or two to five. Which works?", caller) is None
 
-    def test_an_offer_naming_two_days_needs_the_caller_to_pick_one(self, ready) -> None:
+    def test_a_window_offered_on_one_of_two_days_goes_with_that_day(self, ready) -> None:
         line = "Today I've got two to five, or tomorrow eight to eleven. Which works?"
+        reply = _turn(ready, line, "Two to five.")
+        assert reply is not None and reply.record == {"day": "today", "window": "two to five"}
+
+    def test_a_window_offered_for_either_day_needs_the_caller_to_pick_one(self, ready) -> None:
+        line = "Today or tomorrow, I've got two to five. Which works?"
         assert _turn(ready, line, "Two to five.") is None
 
     def test_a_window_the_calendar_doesnt_have_goes_to_the_model(self, ready) -> None:
@@ -354,7 +360,9 @@ class TestTheThirdLiveCall:
         reply = _turn(runtime, "Perfect. And can I get your name?", "It's n a n a k, Nak.")
         assert reply is not None
         assert reply.record == {"customer_name": "Nanak"}
-        assert reply.speech.startswith("Thanks, Nanak.")
+        # Spelled out loud, the letters come back too: three live calls booked a
+        # misheard name because the caller never heard how it had been taken down.
+        assert reply.speech.startswith("Thanks, Nanak -- N, A, N, A, K.")
 
     def test_a_spelling_with_something_else_in_it_goes_to_the_model(self, runtime) -> None:
         assert _turn(runtime, "Can I get your name?", "N a n a k, and my AC is broken") is None

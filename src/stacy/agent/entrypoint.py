@@ -38,15 +38,17 @@ import time
 from typing import Any
 
 from stacy.agent import greeting
-from stacy.agent.nodes import build_agent
+from stacy.agent.fastlane import answer_kind
+from stacy.agent.nodes import _same_words, build_agent
 from stacy.agent.runtime import CallRuntime
-from stacy.agent.tools import DeskOperations
+from stacy.agent.tools import DeskOperations, build_function_tools
 from stacy.agent.turns import NoiseHeldTurnGuard
 from stacy.delivery import CallArchive, LoggingProvider, SmsSender, WebhookSender
 from stacy.delivery.sms import ConsentMissing
 from stacy.desk import CalendarStore, MessageStore
 from stacy.metrics import JsonlSink
 from stacy.metrics.live import format_reply
+from stacy.agent.speech import TTS_TEXT_TRANSFORMS
 from stacy.providers.base import PipelineConfig
 from stacy.providers.registry import (
     build_llm,
@@ -60,10 +62,14 @@ from stacy.providers.registry import (
     supported,
     turn_handling,
     llm_conn_options,
+    warm_llm_cache,
 )
 from stacy.tenants import TenantStore
 
 log = logging.getLogger("stacy.agent")
+
+_BACKGROUND: set[asyncio.Future[Any]] = set()
+"""Fire-and-forget tasks, held so they aren't collected before they finish."""
 
 SIP_DIALED_ATTR = "sip.trunkPhoneNumber"
 """Participant attribute holding the number the caller dialed. Tenant routing key."""
@@ -72,6 +78,8 @@ SIP_CALLER_ATTR = "sip.phoneNumber"
 """Participant attribute holding the caller's own number, for {{system__caller_id}}."""
 
 DEFAULT_TENANT_DIR = "src/stacy/tenants/data"
+
+from stacy.bench import BENCH_PREFIX
 
 KEEP_WARM_PREFIX = "keepwarm-"
 """Rooms that exist only to keep the worker awake; see scripts/keep_warm.py."""
@@ -116,6 +124,24 @@ def _looks_dialed(value: Any) -> bool:
     what the fallback exists for.
     """
     return isinstance(value, str) and bool(re.fullmatch(r"\+?[0-9]{7,15}", value.strip()))
+
+
+def _runtime_for(ctx: Any, room_name: str) -> CallRuntime:
+    """A runtime for a job that is not a call: the tenant's own prompt and tools.
+
+    Used by the model bench, which needs exactly what a call would send and
+    nothing that a call would record.
+    """
+    userdata = getattr(ctx.proc, "userdata", {}) if hasattr(ctx, "proc") else {}
+    tenants, calendar, messages = _stores(userdata)
+    first = os.getenv("STACY_DEFAULT_TENANT") or next(iter(tenants.all()))
+    return CallRuntime.build(
+        tenant=tenants.get(first) if isinstance(first, str) else first,
+        call_id=room_name,
+        caller_id="",
+        calendar=calendar,
+        messages=messages,
+    )
 
 
 def _route(tenants: TenantStore, dialed: Any) -> Any:
@@ -194,6 +220,15 @@ async def entrypoint(ctx: Any) -> None:
         # worker takes 20-30s to wake, and the call that wakes it rings out.
         log.info("keep-warm ping %s", room_name)
         return
+    if room_name.startswith(BENCH_PREFIX):
+        # Not a call either: timing the models from the worker, where the
+        # network distance is production's. See stacy.bench.llm_latency.
+        from stacy.bench import run as bench_run  # noqa: PLC0415
+
+        runtime = _runtime_for(ctx, room_name)
+        metadata = getattr(getattr(ctx, "job", None), "metadata", "") or ""
+        await bench_run(runtime, build_function_tools(DeskOperations(runtime)), metadata)
+        return
 
     from livekit.agents import AgentSession, RoomInputOptions  # noqa: PLC0415
 
@@ -231,14 +266,21 @@ async def entrypoint(ctx: Any) -> None:
         ),
         # A stuck model request is retried after seconds, not the SDK's ten.
         "conn_options": llm_conn_options(cfg.llm),
+        # Without the SDK's markdown filter, which held each reply's last word
+        # until the model had written its tool call. See stacy.agent.speech.
+        "tts_text_transforms": TTS_TEXT_TRANSFORMS,
     }
     session = AgentSession(**supported(AgentSession, session_kwargs))
 
     ops = DeskOperations(runtime)
+    # Started before anything else so it finishes while the greeting plays.
+    warm = asyncio.ensure_future(_warm_model(runtime, ops))
+    _BACKGROUND.add(warm)
+    warm.add_done_callback(_BACKGROUND.discard)
     # Words, not audio, decide whether a noisy line is the caller or the room;
     # see stacy.agent.turns.
     guard = NoiseHeldTurnGuard(commit_after_s=cfg.turn.noise_commit_after_s)
-    _wire(session, runtime, guard)
+    _wire(session, runtime, guard, session_kwargs["vad"])
     watchdog = asyncio.ensure_future(_silence_watchdog(session, runtime, guard))
     ctx.add_shutdown_callback(lambda: _on_shutdown(runtime, watchdog))
 
@@ -282,7 +324,50 @@ async def entrypoint(ctx: Any) -> None:
     await session.say(runtime.tenant.greeting, **supported(session.say, say_kwargs))
 
 
-def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard) -> None:
+async def _warm_model(runtime: CallRuntime, ops: DeskOperations) -> None:
+    """Warm the model's prompt cache for this call. Never allowed to break the call."""
+    try:
+        # In a thread: building the client loads a CA bundle, and the tool schemas
+        # are parsed, both synchronous -- on the event loop that is audio held up.
+        warmed = await asyncio.to_thread(
+            lambda: warm_llm_cache(
+                runtime.pipeline.llm,
+                runtime.instructions or runtime.system_prompt,
+                build_function_tools(ops),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 -- a failed warm-up only costs the old cold start
+        log.warning("call %s: model warm-up failed: %s", runtime.call_id, exc)
+        return
+    if warmed:
+        log.info(
+            "call %s: model cache warmed in %dms (wrote %d tokens, read %d)",
+            runtime.call_id, warmed["ms"], warmed["written"], warmed["read"],
+        )
+
+
+def _pace(vad: Any, runtime: CallRuntime, state: dict[str, Any]) -> None:
+    """Wait longer for a number or an address, less for a yes or no. See fastlane.answer_kind."""
+    update = getattr(vad, "update_options", None)
+    if update is None:
+        return
+    turn = runtime.pipeline.turn
+    kind = answer_kind(runtime)
+    pause = {"patient": turn.vad_patient_silence_s, "eager": turn.vad_eager_silence_s}.get(
+        kind, turn.vad_min_silence_s
+    )
+    if state.get("pause") == pause:
+        return
+    try:
+        update(min_silence_duration=pause)
+    except Exception as exc:  # noqa: BLE001 -- the default wait is still a working call
+        log.warning("call %s: could not change the silence wait: %s", runtime.call_id, exc)
+        return
+    state["pause"] = pause
+    log.info("call %s: waiting %.2fs of silence for a %s answer", runtime.call_id, pause, kind or "normal")
+
+
+def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard, vad: Any = None) -> None:
     """Attach conversation bookkeeping, and the events that explain a bad call.
 
     Only events that carry information the pipeline nodes cannot see are
@@ -295,7 +380,11 @@ def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard) -> None
     open (a stretch of "speech" with no words in it), and the input filter
     removing the caller (turns with no transcript at all). Each leaves a line.
     """
-    state: dict[str, float | int] = {}
+    state: dict[str, Any] = {}
+    # The VAD belongs to the worker process and outlives the call, so a wait
+    # set on the last call is put back first.
+    state["pause"] = None
+    _pace(vad, runtime, state)
 
     @session.on("user_state_changed")  # type: ignore[attr-defined]
     def _on_user_state(ev: Any) -> None:
@@ -342,6 +431,12 @@ def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard) -> None
         metrics = metrics if isinstance(metrics, dict) else None
         if role == "user":
             runtime.latency.on_user(metrics)
+            kept, runtime.kept_note = runtime.kept_note, None
+            content = getattr(item, "content", None)
+            if kept and isinstance(content, list) and _same_words(kept[0], getattr(item, "text_content", "") or ""):
+                # The desk's note for a kept early reply, added now the SDK has
+                # filed the message. Later passes read the history from here.
+                content.append(kept[1])
             return
         if role != "assistant":
             return
@@ -356,6 +451,7 @@ def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard) -> None
         runtime.record_agent(text)
         cut = " (CUT OFF)" if getattr(item, "interrupted", False) else ""
         log.info("said %s%s: %r", runtime.call_id, cut, " ".join(text.split())[:160])
+        _pace(vad, runtime, state)
 
     @session.on("overlapping_speech")  # type: ignore[attr-defined]
     def _on_overlap(ev: Any) -> None:
