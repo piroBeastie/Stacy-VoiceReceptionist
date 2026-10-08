@@ -345,7 +345,7 @@ live line, know what "undo" is before you touch it.
 - Roughly **40% of turns** are answered by code.
 - Model first word **~0.5 s**; voice first byte **~0.12 s**; deliberate
   end-of-turn wait **~0.35 s**; network to the model **48 ms**.
-- Prompt: ~8,000 tokens, ~25,600 characters, cached every turn.
+- Prompt: ~8,000 tokens, ~25,000 characters, cached every turn.
 - Cost of the prompt in latency: **25 ms**. Trimming it is not a latency lever.
 - Test suite: **602 tests**, ~8,900 lines of source.
 

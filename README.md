@@ -5,6 +5,11 @@ ElevenLabs Agents on latency while keeping the orchestration in our own code.
 
 Ported from `Casey-Demo1` main branch, version `agtvrsn_4501m15kg5n8e22t9mckbgqg48md`.
 
+**[docs/how-stacy-works.md](docs/how-stacy-works.md)** is the long form: the call
+path end to end, where a second of latency goes, the correctness guards, the
+instruments, and the bugs worth remembering. This file is the working reference —
+what the pieces are, how to run it, and how to deploy it.
+
 ---
 
 ## Why this exists
@@ -60,19 +65,29 @@ can cover, because it happens before the first word.
 
 ### Where the milliseconds are
 
-| Stage | Typical | Target | Owner |
-|---|---|---|---|
-| Network in | 40–120ms | 40ms | region pinning |
-| **Endpointing** | 300–700ms | **~200ms** | `TurnConfig` — biggest lever |
-| STT final | 100–300ms | ~80ms | vendor |
-| **LLM TTFT** | 300–600ms | **~150ms** | model host + prompt size |
-| TTS TTFB | 80–300ms | ~40ms | vendor + chunk schedule |
-| Egress | 50–100ms | 50ms | codec path |
+Measured on real calls, caller-stops-talking to agent-starts-speaking. The
+per-reply records come from the SDK's own timestamps (`metrics/live.py`), and the
+model and transport numbers were taken from inside the us-east worker, because a
+laptop in another country measures distance rather than speed.
 
-Vendor swaps buy ~150ms total. The win is in the two bolded rows, and both are
-architecture rather than procurement.
+| | Measured | What owns it |
+|---|---|---|
+| **Whole reply, median** | **0.95s** | everything below |
+| A turn the desk answers | 0.37–0.55s | mostly the pause below |
+| Waiting to be sure they finished | ~0.35s | `TurnConfig` — VAD floor plus the detector |
+| Deepgram's final transcript | 0.13–0.45s | overlaps the pause, so usually free |
+| Claude Haiku's first word | 0.50s | the model, and nothing else |
+| Finishing the first sentence | ~0.20s | the model's token rate |
+| ElevenLabs' first audio byte | 0.12s | vendor |
+| Network to the model host | 0.048s | region pinning, already done |
 
-Three of those numbers moved once the docs were read end to end:
+Two of those rows are the whole story. A turn the desk answers costs about what
+the deliberate pause costs, because its audio is built during that pause. A turn
+the model answers costs a second, and roughly half of that is the model's first
+word. Which is why the lever that paid was moving turns into code, not shopping
+for a faster vendor — see "The desk" below.
+
+Three numbers moved once the docs were read end to end:
 
 - `optimize_streaming_latency` is a **documented no-op** on current ElevenLabs
   models. It was set to `3` here and doing nothing. The parameter that governs
@@ -81,13 +96,39 @@ Three of those numbers moved once the docs were read end to end:
   reply, buffered before a single frame is synthesized. It is now 50.
 - Deepgram **Nova-3 rejects `keywords`** and uses keyterm prompting instead, so
   every boosted town and staff name was silently ignored.
-- Prompt size is measurable and large: **~5,700 tokens in demo mode, ~3,600 for
-  a real client.** TTFT scales with it, so the demo-only blocks are not free.
+- Prompt size is measurable and large: **~8,000 tokens in demo mode** (~25,000
+  characters) and smaller for a real client. It reads as though it must be the
+  problem, and it is not: interleaved against a warm cache, the whole prompt and
+  all six tool schemas cost **25ms** of the first token. Trimming it saves money,
+  not time. The cache is what makes that true, so the warm-up below earns its keep.
 - The two per-call values sat ~200 tokens into that prompt, so a provider could
   cache almost none of it — and the timestamp varies by the minute, so even that
   sliver missed across calls. They now live in a `# This call` section at the
   very end: **the stable prefix went from ~1% to 99.2%**, and a test fails if
   anything per-call is added above it.
+
+### The desk: the turns that never reach a model
+
+Every caller turn goes first to `agent/fastlane.py`, which is ordinary Python. If
+it recognises the situation exactly, it answers; if it has any doubt, the model
+answers. On the calls we have recorded, that is about **40% of turns at ~0.4s**
+instead of ~1.1s.
+
+The turns it takes are the scripted ones: a phone number read out, a yes to the
+text-consent script, a name, a street, a town, a window pick, a yes to the
+read-back (which books), "go ahead and book it", and any question whose answer is
+in the tenant file — price, hours, the service area, the FAQs. Everything else is
+the model's: the problem description, an emergency judgment, anything unusual.
+
+It is worth being clear about why this is not just a cache. The turns most
+expensive to get wrong are the scripted ones — digits, addresses, whether an
+appointment exists — and a deterministic reply cannot invent a price or a phone
+number. The speed is a side effect of putting code where correctness mattered.
+
+The cost is that the desk is where bugs hide, because it decides on regular
+expressions what a person meant. It carries the most tests in the repo, every
+rule names the call that caused it, and a replay harness runs every recorded call
+through it before a change ships.
 
 ### What the harness can and cannot see
 
@@ -108,16 +149,36 @@ should be treated as one until it is measured from the far end.
 | `providers/` | Vendor choice as data; `registry.py` is the only vendor-aware module |
 | `desk/` | Calendar and message pad — capacity, hours, and refusals |
 | `delivery/` | Post-call webhook and consent-gated SMS |
-| `agent/` | Runtime, filler policy, tools, backchannel, and thin SIP glue |
+| `agent/` | Runtime, the desk, tools, turn-taking, speech handling, thin SIP glue |
+| `bench/` | Instruments: model timings from inside the worker, shadow transcribers |
 | `evals/` | The 8 criteria and 11 data fields, plus the judge that runs them |
 
 Nothing outside `tenants/` knows a business fact. Nothing outside
 `providers/registry.py` knows a vendor name. Those two rules are what make
 client two cheap and vendor swaps a config change.
 
-A third rule now joins them: **nothing outside `agent/nodes.py` and
-`agent/entrypoint.py` imports the SDK.** All 254 tests run with no vendor
-package installed, which is why the whole policy layer is testable at all.
+A third rule now joins them: **nothing outside `agent/nodes.py`,
+`agent/entrypoint.py` and `bench/` imports the SDK at module scope.** Almost all
+of the 602 tests run with no vendor package installed, which is why the whole
+policy layer is testable at all.
+
+### The instruments
+
+Built because the arguments they settle cannot be settled by reading code.
+
+| Tool | Answers |
+|---|---|
+| `metrics/live.py` | What did the caller actually wait, per reply? (the SDK's own timestamps, one JSON line each) |
+| `bench/llm_latency.py` + `scripts/bench_models.py` | How fast is each candidate model **from the worker**? A job in a `bench-` room, because measuring from a laptop ranks providers by distance |
+| `bench/shadow_stt.py` | Which recogniser settings hear this caller? Extra transcribers on the same live audio, logging only — never speaking, never blocking the call |
+| `scripts/latency_report.py` | p50/p90 over a log, split desk against model |
+| `scripts/preflight.py` | Would a call fail right now, and why? Cheaper than a call |
+
+Two more live in the scratchpad rather than the repo, because they are for
+answering a question rather than for shipping: a call simulator that runs whole
+scripted calls through the real desk, prompt and tools against any model with a
+model playing the caller, and a replay harness that pushes every recorded call
+back through the current desk to catch a regression before it ships.
 
 ---
 
@@ -417,15 +478,17 @@ number rather than a hunch.
 
 ## What the agent can actually do
 
-Five tools, all backed by real stores rather than placeholders:
+Six tools, all backed by real stores rather than placeholders. The "refuses
+when" column is the interesting one: every entry in it is a sentence the agent
+said on a call before the guard existed.
 
 | Tool | Backed by | Refuses when |
 |---|---|---|
 | `lookup_customer` | `desk/calendar.py` | — (pre-fills the slots on a hit) |
 | `check_availability` | `desk/calendar.py` | closed day, elapsed window, full window |
-| `record_details` | `agent/slots.py` | town outside the service area |
-| `book_appointment` | `desk/calendar.py` + slots | anything still missing, unknown window, at capacity |
-| `dispatch_emergency` | `desk/calendar.py` + slots | name/number/address/town/problem missing |
+| `record_details` | `agent/slots.py` | town outside the service area; a phone number the caller never said |
+| `book_appointment` | `desk/calendar.py` + slots | anything still missing, unknown window, at capacity, the details were never read back, the caller's answer to the read-back was a no or a correction, or this exact visit is already booked |
+| `dispatch_emergency` | `desk/calendar.py` + slots | name/number/address/town/problem missing, or a technician is already on the way to that address |
 | `take_message` | `desk/messages.py` | — |
 
 ### Callers don't answer one question at a time
@@ -518,19 +581,26 @@ with the same model is self-marking, and the judge doesn't need to be fast.
 
 ## What's deliberately not here yet
 
-- **Live SIP config.** Phase 1. The Twilio trunk and LiveKit SIP dispatch rule
-  are infrastructure, not code.
 - **A real SMS carrier.** `LoggingProvider` writes the message to the log and
   says so. An unconfigured provider that silently no-ops is indistinguishable
   from a working one until a customer says they never got the text.
-- **Cached greeting audio.** The greeting is static per tenant and is currently
-  synthesized on every call, which puts TTS connection setup at the most-judged
-  moment of the call. Caching it needs the `say(audio=...)` surface confirmed
-  against the installed SDK first — writing it blind would be a guess.
+- **Speech recognition on an accented line.** This is the largest remaining
+  source of wrong data, not latency. Three calls in a row had a spelled name
+  heard wrong — Ananak, Nanat, Nank for Nanak — and one booked "1230 Street" for
+  "123 Oak Street". The name is now spelled back to the caller so a dropped
+  letter surfaces on the call, and `bench/shadow_stt.py` exists to settle which
+  recogniser settings actually help. Until a real call runs with it, the fix is
+  reasoned rather than proven.
 - **Retention and redaction.** Traces, transcripts and the calendar are all
   plaintext on disk. Decide the policy before real traffic, not after.
 - **Multi-worker booking.** `CalendarStore`'s lock is per process. Two workers
   can double-book the same window. Postgres behind the same interface fixes it.
+- **More than one live tenant.** A business is a JSON record and the code has no
+  per-tenant branches, but only Millbrook has taken real calls. The claim is
+  structural, not proven at scale.
+- **A named successor to Haiku 4.5.** Anthropic's stated retirement is "not
+  sooner than 15 October 2026". `scripts/bench_models.py` is kept ready so the
+  replacement is chosen on measurements rather than in a hurry.
 
 ## Verify before the first live call
 
@@ -574,7 +644,7 @@ fail. Run it first; it is cheaper than a call.
 python -m pytest -q
 ```
 
-265 tests, none of which need a vendor package. They are not style checks — each
+602 tests, almost none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 
