@@ -964,6 +964,22 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
             try:
                 result = fn(*args, **kwargs)
                 return result
+            except Exception as exc:  # noqa: BLE001 - a raised tool is silence on the line
+                # Every desk operation returns a sentence, including its
+                # failures -- but only the failures it anticipated. A full
+                # disk, a permission on the lock file, or a plain bug raised
+                # straight through the SDK, and what the caller gets then is
+                # not an apology, it is dead air. So the unanticipated ones
+                # also become a sentence: one that cannot be mistaken for
+                # success, and that says what to do next.
+                log.exception("tool %s %s: %s raised", ops.runtime.call_id, name, type(exc).__name__)
+                ops.runtime.annotate(**{f"tool_{name}_failed": type(exc).__name__})
+                result = (
+                    f"{name} failed and nothing was written down -- don't say it's done or "
+                    "that they're booked. Apologise once, tell them you'll have someone call "
+                    "them straight back, and take a message if you haven't already."
+                )
+                return result
             finally:
                 elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
                 ops.runtime.annotate(**{f"tool_{name}_ms": elapsed_ms})
