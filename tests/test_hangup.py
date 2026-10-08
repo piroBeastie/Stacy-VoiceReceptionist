@@ -15,7 +15,12 @@ from typing import Any
 import pytest
 
 from stacy.agent import CallRuntime, DeskOperations
-from stacy.agent.hangup import caller_signed_off, farewell_said, hang_up
+from stacy.agent.hangup import (
+    business_unfinished,
+    caller_signed_off,
+    farewell_said,
+    hang_up,
+)
 from stacy.desk import CalendarStore, MessageStore
 from stacy.tenants import Tenant
 
@@ -165,6 +170,98 @@ class TestHangingUpPolitely:
         session, ctx = self._Session(), self._Ctx(fails=True)
         assert asyncio.run(hang_up(ctx, session, runtime, "wrong number")) is True
         assert session.closed
+
+
+class TestNotBeforeTheJobIsDone:
+    """The line is not cut before the caller got what they rang for.
+
+    Every test here is a caller who said goodbye, and an agent who said
+    goodbye back, where cutting the line would still be wrong.
+    """
+
+    def _book(self, runtime) -> None:
+        runtime.slots.update(
+            customer_name="Dan", phone="+12035550147", street_address="14 Elm Street",
+            town="Wallingford", problem="no heat", day="tomorrow", window="eleven to two",
+        )
+        runtime.record_agent(
+            "So that's Dan, 14 Elm Street in Wallingford, no heat, tomorrow, eleven to two. Right?"
+        )
+        runtime.record_user("Yes.")
+        assert DeskOperations(runtime).book_appointment().startswith("Booked")
+
+    def test_it_cuts_once_the_visit_is_booked(self, runtime) -> None:
+        self._book(runtime)
+        _exchange(
+            runtime,
+            ("agent", "You're all set for tomorrow, eleven to two. Anything else?"),
+            ("user", "Nope, that's it."),
+            ("agent", "Good luck with the furnace, Dan — bye."),
+        )
+        assert farewell_said(runtime) == "both said goodbye"
+
+    def test_it_does_not_cut_with_the_details_and_no_booking(self, runtime) -> None:
+        runtime.slots.update(customer_name="Dan", street_address="14 Elm Street", problem="no heat")
+        _exchange(
+            runtime,
+            ("agent", "Got it. Let me find you a window — bye for now?"),
+            ("user", "Okay, bye."),
+            ("agent", "Take care, Dan — bye."),
+        )
+        # She has his address and no appointment. He rang to get a tech out.
+        assert farewell_said(runtime) == ""
+        assert business_unfinished(runtime) == ["customer_name", "street_address", "problem"]
+
+    def test_a_message_taken_counts_as_finished(self, runtime) -> None:
+        runtime.slots.update(customer_name="Dan", phone="+12035550147", problem="wants a quote")
+        assert DeskOperations(runtime).take_message(
+            caller_name="Dan", phone="+12035550147", summary="wants a quote",
+        )
+        _exchange(runtime, ("agent", "I'll get that to Mike. Anything else?"),
+                  ("user", "No, I'm good."), ("agent", "Take care — bye."))
+        assert farewell_said(runtime) == "both said goodbye"
+
+    def test_a_caller_who_gave_nothing_can_still_go(self, runtime) -> None:
+        # The opening-hours question. Nothing started, so nothing is unfinished.
+        _exchange(runtime, ("agent", "We're open till five today."), ("user", "Great, bye."),
+                  ("agent", "Bye."))
+        assert farewell_said(runtime) == "both said goodbye"
+
+    def test_not_while_she_is_asking_something(self, runtime) -> None:
+        _exchange(
+            runtime,
+            ("agent", "Anything else?"),
+            ("user", "No, that's it."),
+            ("agent", "Take care, Dan — did you want me to put the filter on the ticket too?"),
+        )
+        assert farewell_said(runtime) == ""  # she asked; he answers
+
+    def test_not_while_his_goodbye_carries_a_question(self, runtime) -> None:
+        self._book(runtime)
+        _exchange(
+            runtime,
+            ("agent", "You're all set. Anything else?"),
+            ("user", "How much will it run me? Anyway, bye."),
+            ("agent", "Bye, Dan."),
+        )
+        assert farewell_said(runtime) == ""  # the price question is still open
+
+    def test_a_dispatch_counts_as_finished(self, runtime) -> None:
+        runtime.slots.update(
+            customer_name="Dan", phone="+12035550147", street_address="14 Elm Street",
+            town="Wallingford", problem="furnace is dead and the pipes are at risk",
+        )
+        assert DeskOperations(runtime).dispatch_emergency()
+        _exchange(runtime, ("agent", "He's on his way now."), ("user", "Thank you, bye."),
+                  ("agent", "Stay warm, Dan — bye."))
+        assert farewell_said(runtime) == "both said goodbye"
+
+    def test_the_tool_can_still_let_a_leaving_caller_go(self, runtime) -> None:
+        # The escape hatch: unfinished, but he said he is going. The automatic
+        # path refuses this; the model has to ask for it in so many words.
+        runtime.slots.update(customer_name="Dan", street_address="14 Elm Street")
+        _exchange(runtime, ("agent", "And what town is that?"), ("user", "Forget it, bye."))
+        assert DeskOperations(runtime).end_call(reason="caller rang off").startswith("Alright")
 
 
 class TestTheWiringThatActuallyFires:

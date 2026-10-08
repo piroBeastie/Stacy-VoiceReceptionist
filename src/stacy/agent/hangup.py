@@ -101,14 +101,46 @@ def _last_clause(spoken: str) -> str:
     return said[-1] if said else ""
 
 
+BOOKING_SLOTS = ("customer_name", "phone", "street_address", "town", "problem")
+"""The details a caller only gives when they want something booked."""
+
+
+def business_unfinished(runtime: Any) -> list[str]:
+    """What this call started and has not finished, as a list of slot names.
+
+    Holding somebody's name and address with nothing booked and no message
+    taken means the call had a purpose that was not served. Both ways of
+    ending a call ask this question, so they are guaranteed to agree on the
+    answer -- the version where `end_call` refused and the automatic farewell
+    cut anyway would be a bug nobody would find until a caller complained.
+
+    A caller who gave nothing -- a wrong number, somebody asking the opening
+    hours -- is finished the moment they say so, and gets an empty list.
+    """
+    if runtime.appointments or runtime.outcome == "message":
+        return []
+    return [field for field in BOOKING_SLOTS if getattr(runtime.slots, field, "")]
+
+
 def farewell_said(runtime: Any) -> str:
     """Why this call is over, or '' if it is not.
 
-    Both halves have to be there. The agent's last line is a sign-off, and the
-    caller had already said they were done -- which is the order the prompt's
-    closing script produces, and the order a person would expect. A caller who
-    says "bye" to a question Stacy has not answered yet does not end the call:
-    she answers, then signs off, then it ends.
+    Every one of these has to hold, and each one is a call that went wrong
+    before the check existed:
+
+    1. The caller said they were done, in their own last turn.
+    2. The agent's reply was a sign-off, and the agent spoke last.
+    3. Neither of those two turns left a question hanging.
+    4. The call finished what it started -- booked, dispatched, or a message
+       taken -- or never started anything.
+
+    Four is the one worth stating plainly: **the line is never cut before the
+    booking is made.** A caller who gave their name and address and has no
+    appointment did not get what they rang for, and dropping them at that
+    point loses the job and the customer. If they genuinely want to leave
+    anyway, the model can say so with `end_call`, which is allowed to let a
+    caller go once they have signed off. That is a decision with a sentence
+    behind it; this function will not make it by accident.
     """
     if getattr(runtime.safety, "latched", False):
         return ""  # the gas script owns the line until the caller leaves it
@@ -122,6 +154,18 @@ def farewell_said(runtime: Any) -> str:
     if not _AGENT_FAREWELL.search(agent_lines[-1]):
         return ""
     if not caller_signed_off(caller_lines[-1]):
+        return ""
+
+    # Nothing is cut over an open question. The agent saying "take care" in
+    # the same breath as asking something still wants an answer, and a caller
+    # who tacked a question onto their goodbye still wants it answered.
+    if agent_lines[-1].rstrip().endswith("?"):
+        return ""
+    if "?" in caller_lines[-1]:
+        return ""
+
+    # And nothing is cut before the thing the caller rang about is done.
+    if business_unfinished(runtime):
         return ""
     return "both said goodbye"
 

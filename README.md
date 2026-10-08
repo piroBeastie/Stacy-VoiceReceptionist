@@ -159,7 +159,7 @@ client two cheap and vendor swaps a config change.
 
 A third rule now joins them: **nothing outside `agent/nodes.py`,
 `agent/entrypoint.py` and `bench/` imports the SDK at module scope.** Almost all
-of the 637 tests run with no vendor package installed, which is why the whole
+of the 645 tests run with no vendor package installed, which is why the whole
 policy layer is testable at all.
 
 ### The instruments
@@ -490,7 +490,7 @@ said on a call before the guard existed.
 | `book_appointment` | `desk/calendar.py` + slots | anything still missing, unknown window, at capacity, the details were never read back, the caller's answer to the read-back was a no or a correction, or this exact visit is already booked |
 | `dispatch_emergency` | `desk/calendar.py` + slots | name/number/address/town/problem missing, or a technician is already on the way to that address |
 | `take_message` | `desk/messages.py` | — |
-| `end_call` | `agent/hangup.py` | details half-collected and nothing booked, unless the caller said they were going; always, while the gas instruction is latched |
+| `end_call` | `agent/hangup.py` | anything is held with nothing booked, unless the caller said they were going; always, while the gas instruction is latched |
 
 ### Ending the call
 
@@ -503,10 +503,26 @@ that half-minute of nothing is the part of the call people remember.
 There are two ways a call ends now, and the split is deliberate.
 
 **The normal one is decided in code, not by the model.** `agent/hangup.py`
-reads the transcript: the caller said they were done, the agent's reply was a
-sign-off, and the agent spoke last. All three, or nothing happens. The model is
-never asked whether the call is over, because the one question you do not want
+reads the transcript and wants four things true at once. The model is never
+asked whether the call is over, because the one question you do not want
 answered by a language model is "should I hang up on this person?"
+
+1. The caller said they were done, in their own last turn.
+2. The agent's reply was a sign-off, and the agent spoke last.
+3. Neither of those turns left a question hanging — not the agent saying
+   "take care" in the same breath as asking something, and not a caller who
+   tacked "how much will it run me?" onto their goodbye.
+4. **The call finished what it started** — booked, dispatched, or a message
+   taken — or never started anything.
+
+Four is the rule worth stating on its own: **the line is never cut before the
+booking is made.** A caller who has given their name and address and has no
+appointment did not get what they rang for, and dropping them there loses the
+job and the customer. Someone who gave nothing — a wrong number, a question
+about the opening hours — has nothing unfinished and can go the moment they
+say so. The same `business_unfinished()` is read by both ways of ending a
+call, so the version where `end_call` refuses and the automatic farewell cuts
+anyway cannot happen.
 
 Reading "the caller said they were done" is finer work than it looks. The
 sign-off has to be the caller's whole last clause, not merely the end of it:
@@ -686,7 +702,7 @@ fail. Run it first; it is cheaper than a call.
 python -m pytest -q
 ```
 
-637 tests, almost none of which need a vendor package. They are not style checks — each
+645 tests, almost none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

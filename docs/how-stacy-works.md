@@ -62,7 +62,7 @@ Two things about this diagram matter more than they look:
 
 ## 3. The repo, module by module
 
-~9,000 lines of source, 637 tests across 22 files.
+~9,000 lines of source, 645 tests across 22 files.
 
 | Module | What it owns |
 |---|---|
@@ -377,7 +377,7 @@ writing the regex that judges them — and the test file now carries all 28.
   end-of-turn wait **~0.35 s**; network to the model **48 ms**.
 - Prompt: ~8,000 tokens, ~25,000 characters, cached every turn.
 - Cost of the prompt in latency: **25 ms**. Trimming it is not a latency lever.
-- Test suite: **637 tests**, ~9,000 lines of source.
+- Test suite: **645 tests**, ~9,000 lines of source.
 
 Always state the definition with the number. Many vendors quote a figure that
 excludes the pause used to be sure the caller has finished, or that measures the

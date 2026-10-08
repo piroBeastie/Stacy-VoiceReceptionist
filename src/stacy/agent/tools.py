@@ -659,13 +659,10 @@ class DeskOperations:
             return (
                 "No. The instruction stands until they are out of the house -- repeat it, and let them go."
             )
-        slots = self.runtime.slots
-        collected = [f for f in ("customer_name", "phone", "street_address", "town", "problem")
-                     if getattr(slots, f)]
-        finished = bool(self.runtime.appointments) or self.runtime.outcome == "message"
-        if collected and not finished and not self._caller_signed_off():
+        held = self._unfinished()
+        if held and not self._caller_signed_off():
             return (
-                f"Not yet: you have {', '.join(collected)} written down and nothing booked. "
+                f"Not yet: you have {', '.join(held)} written down and nothing booked. "
                 "Finish it or take a message. If they want to go, let them say so first."
             )
         self.runtime.end_call = reason.strip() or "the agent ended the call"
@@ -678,6 +675,16 @@ class DeskOperations:
 
         said = [t.get("text", "") for t in self.runtime.transcript if t.get("role") == "user"]
         return bool(said) and caller_signed_off(said[-1])
+
+    def _unfinished(self) -> list[str]:
+        """The details held with nothing booked. Shared with the farewell path.
+
+        Both ways of ending a call read the same function, so they cannot
+        disagree about whether this call is finished.
+        """
+        from stacy.agent.hangup import business_unfinished  # noqa: PLC0415 - import cycle
+
+        return business_unfinished(self.runtime)
 
     def take_message(
         self,
