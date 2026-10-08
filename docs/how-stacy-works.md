@@ -1,5 +1,7 @@
 # How stacy works — a study guide
 
+For a flat index of every capability and fix — symptom, file and test on one line — see [features-and-fixes.md](features-and-fixes.md). This document is the walkthrough.
+
 Everything in this document is measured or read out of the code in this repo, as
 of 2026-09-20. Numbers without a source are ones we measured ourselves on real
 calls; where a number is someone else's claim, it says so.

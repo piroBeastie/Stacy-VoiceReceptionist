@@ -7,8 +7,15 @@ Ported from `Casey-Demo1` main branch, version `agtvrsn_4501m15kg5n8e22t9mckbgqg
 
 **[docs/how-stacy-works.md](docs/how-stacy-works.md)** is the long form: the call
 path end to end, where a second of latency goes, the correctness guards, the
-instruments, and the bugs worth remembering. This file is the working reference —
-what the pieces are, how to run it, and how to deploy it.
+instruments, and the bugs worth remembering.
+
+**[docs/features-and-fixes.md](docs/features-and-fixes.md)** is the index: every
+capability and every fix in one place, each with the symptom that caused it, the
+file that holds it and the test that pins it — plus an honest list of what isn't
+done. Start there if you are looking for one specific thing.
+
+This file is the working reference — what the pieces are, how to run it, and how
+to deploy it.
 
 ---
 
