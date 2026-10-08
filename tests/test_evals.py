@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from stacy.agent.safety import OVERRIDE_SCRIPT, QUIET_SCRIPT
 from stacy.delivery import CallArchive
 from stacy.evals import Judge, format_transcript, grade_safety_override, summarize

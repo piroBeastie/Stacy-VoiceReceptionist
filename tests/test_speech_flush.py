@@ -19,6 +19,7 @@ from livekit.agents import tts as sdk_tts  # noqa: E402
 from stacy.agent.speech import push_with_flush  # noqa: E402
 
 FLUSH = "<flush>"
+_NO_RETRY = APIConnectOptions(max_retry=0)
 
 
 class _RecordingTTS(sdk_tts.TTS):
@@ -28,8 +29,8 @@ class _RecordingTTS(sdk_tts.TTS):
     def synthesize(self, text, *, conn_options=None):  # pragma: no cover - never called
         raise NotImplementedError
 
-    def stream(self, *, conn_options=APIConnectOptions(max_retry=0)):
-        return _RecordingStream(tts=self, conn_options=conn_options)
+    def stream(self, *, conn_options=None):
+        return _RecordingStream(tts=self, conn_options=conn_options or _NO_RETRY)
 
 
 class _RecordingStream(sdk_tts.SynthesizeStream):

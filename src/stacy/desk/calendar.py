@@ -312,4 +312,6 @@ class CalendarStore:
             if "".join(c for c in a.phone if c.isdigit())[-10:] == digits
         ]
         # See MessageStore.all_for: append order breaks timestamp ties.
-        return sorted(reversed(matches), key=lambda a: a.created_at, reverse=True)
+        return sorted(  # noqa: C414 - reversed() is what breaks ties by append order
+            reversed(matches), key=lambda a: a.created_at, reverse=True
+        )

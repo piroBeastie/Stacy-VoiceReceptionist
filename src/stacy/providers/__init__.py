@@ -14,10 +14,10 @@ from stacy.providers.base import (
 )
 
 __all__ = [
+    "TELEPHONY_FORMAT",
+    "LLMConfig",
     "PipelineConfig",
     "STTConfig",
-    "LLMConfig",
     "TTSConfig",
     "TurnConfig",
-    "TELEPHONY_FORMAT",
 ]

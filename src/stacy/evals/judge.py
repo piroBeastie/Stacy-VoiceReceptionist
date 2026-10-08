@@ -25,8 +25,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 from stacy.agent.safety import OVERRIDE_SCRIPT, QUIET_SCRIPT, is_gas_or_co
 from stacy.evals.criteria import Criterion, DataField, Verdict, active_criteria, active_fields

@@ -26,7 +26,9 @@ import json
 import logging
 import re
 import time
-from typing import Any, AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator
+from contextlib import suppress
+from typing import Any
 
 from stacy.agent.fastlane import desk_reply, name_spelled
 from stacy.agent.runtime import CallRuntime
@@ -40,9 +42,9 @@ from stacy.agent.slots import (
     readback_note,
 )
 from stacy.agent.speech import push_with_flush, strip_audio_tags_stream
+from stacy.agent.tools import DeskOperations, build_function_tools
 from stacy.bench.shadow_stt import build as build_shadows
 from stacy.bench.shadow_stt import specs as shadow_specs
-from stacy.agent.tools import DeskOperations, build_function_tools
 from stacy.metrics import Stage
 
 log = logging.getLogger("stacy.agent.nodes")
@@ -202,10 +204,8 @@ def build_agent(runtime: CallRuntime, ops: DeskOperations | None = None) -> Any:
             async def heard(frames: Any) -> Any:
                 async for frame in frames:
                     for shadow in shadows:
-                        try:
+                        with suppress(Exception):  # a shadow never disturbs the call
                             shadow.push(frame)
-                        except Exception:  # noqa: BLE001, S110 - same
-                            pass
                     yield frame
 
             try:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date
 from typing import Protocol
 
 from stacy.desk.calendar import Appointment
@@ -32,7 +32,7 @@ def _spoken_date(iso: str) -> str:
     avoiding. `%-d` is not portable to Windows, hence the manual day number.
     """
     try:
-        parsed = datetime.strptime(iso, "%Y-%m-%d")
+        parsed = date.fromisoformat(iso)
     except ValueError:
         return iso
     return f"{parsed.strftime('%A, %B')} {parsed.day}"

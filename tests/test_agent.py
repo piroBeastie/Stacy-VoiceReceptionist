@@ -8,7 +8,8 @@ one of the modules below instead.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
+from itertools import pairwise
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -161,7 +162,7 @@ class TestFillerPolicy:
         for _ in range(4):
             p.begin_turn()
             heard.append(p.tool_phrase("check_availability"))
-        assert all(a != b for a, b in zip(heard, heard[1:]))
+        assert all(a != b for a, b in pairwise(heard))
 
     def test_asking_whether_a_tool_is_covered_consumes_nothing(self) -> None:
         # The phrase is chosen when the idle dwell expires. A tool that finished

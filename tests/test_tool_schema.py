@@ -156,7 +156,8 @@ class TestANumberCorrectedOverTwoTurns:
 
 
 def test_the_context_name_resolves_at_module_scope() -> None:
-    import stacy.agent.tools as module
     from livekit.agents import RunContext
+
+    import stacy.agent.tools as module
 
     assert module.RunContext is RunContext

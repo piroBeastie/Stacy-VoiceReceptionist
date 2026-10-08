@@ -28,8 +28,9 @@ import json
 import logging
 import random
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 
 log = logging.getLogger("stacy.delivery")
 
@@ -96,9 +97,11 @@ class AiohttpTransport:
         import aiohttp  # noqa: PLC0415
 
         timeout = aiohttp.ClientTimeout(total=self._timeout_s)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, data=body, headers=headers) as resp:
-                return resp.status
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.post(url, data=body, headers=headers) as resp,
+        ):
+            return resp.status
 
 
 @dataclass

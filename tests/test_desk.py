@@ -7,7 +7,7 @@ twice; "we'll text you a confirmation" is only true if consent was captured.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest

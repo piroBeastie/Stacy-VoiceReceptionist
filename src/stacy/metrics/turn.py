@@ -26,11 +26,12 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+from itertools import pairwise
 from typing import Any
 
 
-class Stage(str, Enum):
+class Stage(StrEnum):
     """Marks on the critical path of one turn.
 
     Declaration order is the *nominal* pipeline and is used only for stable
@@ -125,7 +126,7 @@ class TurnTrace:
         """
         ordered = self._ordered()
         out: dict[str, float] = {}
-        for (_, earlier), (stage, later) in zip(ordered, ordered[1:]):
+        for (_, earlier), (stage, later) in pairwise(ordered):
             name = SPAN_NAME.get(stage)
             if name is None:
                 continue

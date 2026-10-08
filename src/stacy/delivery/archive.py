@@ -20,8 +20,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 log = logging.getLogger("stacy.delivery.archive")
 

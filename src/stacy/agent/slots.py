@@ -27,7 +27,8 @@ Two of the prompt's rules become structural here rather than instructed:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, fields as dataclass_fields
+from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 
 from stacy.tenants.models import Tenant
 

@@ -44,5 +44,27 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 100
+# 100 was the target and 49 lines in src never met it: the day/window regexes
+# and the word tables read worse broken across lines than they do long.
+line-length = 120
 src = ["src"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "E501", "F", "I", "UP", "B", "SIM", "C4", "DTZ", "RUF"]
+ignore = [
+    # "yes yeah yep sure".split() is how the word sets stay readable, and they
+    # are read far more often than they are edited.
+    "SIM905",
+    # Em dashes and curly quotes in these strings are deliberate: most of them
+    # are spoken aloud, and the voice reads the typography.
+    "RUF001",
+    # The `noqa` comments carry a reason, and several name rules this config
+    # does not enforce (PLC0415 for the deliberate lazy imports, BLE001 for the
+    # catch-alls that keep a call alive). They are documentation, not leftovers.
+    "RUF100",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The tests quote whole spoken lines -- read-backs, the consent script -- and
+# breaking those across lines hides what is being asserted.
+"tests/*" = ["E501"]

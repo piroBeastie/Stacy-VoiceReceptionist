@@ -22,9 +22,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable
 from datetime import date as Date
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any
 
 from stacy.agent.runtime import CallRuntime
 from stacy.agent.slots import (

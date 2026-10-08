@@ -261,7 +261,7 @@ def main() -> int:
         print(f"  lk sip dispatch-rule create {rule_path.as_posix()}")
     else:
         print("  # take the ST_... id it prints, then:")
-        print(f"  python scripts/sip_config.py --trunk-id ST_...")
+        print("  python scripts/sip_config.py --trunk-id ST_...")
         print(f"  lk sip dispatch-rule create {rule_path.as_posix()}")
     print()
     print("On the Twilio side, the number above must be attached to an Elastic SIP")

@@ -20,6 +20,7 @@ import asyncio
 import os
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -36,10 +37,8 @@ async def ping(lk: api.LiveKitAPI, agent_name: str) -> str:
         api.CreateAgentDispatchRequest(agent_name=agent_name, room=room)
     )
     await asyncio.sleep(15)
-    try:
+    with suppress(Exception):  # an empty room closes on its own anyway
         await lk.room.delete_room(api.DeleteRoomRequest(room=room))
-    except Exception:  # noqa: BLE001, S110 - an empty room closes on its own anyway
-        pass
     return room
 
 

@@ -150,7 +150,7 @@ class CallRuntime:
         messages: MessageStore | None = None,
         overrides: PipelineConfig | None = None,
         now: datetime | None = None,
-    ) -> "CallRuntime":
+    ) -> CallRuntime:
         """Assemble a runtime, rendering the prompt and resolving vendors once."""
         cfg = pipeline_for(tenant, overrides=overrides)
         builder = PromptBuilder()

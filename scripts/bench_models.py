@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -30,7 +31,8 @@ async def main() -> int:
     ap.add_argument("--wait-s", type=int, default=180, help="How long to leave the room open")
     ap.add_argument("--models", default="", help="Comma-separated vendor/model, else the module's list")
     ap.add_argument("--rounds", type=int, default=0)
-    ap.add_argument("--gap-s", type=float, default=0.0, help="Pause between calls; LiveKit Inference 429s on a wide burst")
+    ap.add_argument("--gap-s", type=float, default=0.0,
+                    help="Pause between calls; LiveKit Inference 429s on a wide burst")
     args = ap.parse_args()
 
     load_dotenv()
@@ -56,10 +58,8 @@ async def main() -> int:
         )
         print(f"dispatched {agent_name} into {room}; the numbers go to the worker log", flush=True)
         await asyncio.sleep(args.wait_s)
-        try:
+        with suppress(Exception):  # an empty room closes on its own
             await lk.room.delete_room(api.DeleteRoomRequest(room=room))
-        except Exception:  # noqa: BLE001, S110 - an empty room closes on its own
-            pass
     finally:
         await lk.aclose()
     return 0

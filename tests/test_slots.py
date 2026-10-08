@@ -14,15 +14,15 @@ import pytest
 from stacy.agent import CallRuntime, DeskOperations
 from stacy.agent.slots import (
     BookingSlots,
+    foreign_number_note,
     heard_booking_details,
     normalize_phone,
+    number_with_country,
     partial_number_note,
     phone_across_turns,
     phone_in_speech,
-    spelled_name,
-    foreign_number_note,
-    number_with_country,
     readback_note,
+    spelled_name,
     split_town,
     spoken_digits,
 )
@@ -146,15 +146,15 @@ class TestSlots:
         assert s.missing() == ["phone", "street_address", "town", "problem", "fuel", "day", "window"]
 
     def test_fuel_appears_in_missing_only_when_it_applies(self) -> None:
-        base = dict(
-            customer_name="Dan",
-            phone="+12035550147",
-            street_address="14 Elm",
-            town="Wallingford",
-            problem="no heat",
-            day="tomorrow",
-            window="two to five",
-        )
+        base = {
+            "customer_name": "Dan",
+            "phone": "+12035550147",
+            "street_address": "14 Elm",
+            "town": "Wallingford",
+            "problem": "no heat",
+            "day": "tomorrow",
+            "window": "two to five",
+        }
         assert BookingSlots(**base, system_type="furnace").missing() == ["fuel"]
         assert BookingSlots(**base, system_type="heat pump").missing() == []
 

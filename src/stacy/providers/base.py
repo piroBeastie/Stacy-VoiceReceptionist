@@ -211,7 +211,7 @@ class LLMConfig:
     platform's `cascade_timeout_seconds`, which defaults to 4 and clamps to
     2-15."""
 
-    fallback: "LLMConfig | None" = None
+    fallback: LLMConfig | None = None
     """Second model tried on timeout or error. Set one before taking real
     traffic. This is where a fast open-weight model earns its place: when the
     smart primary has timed out, the comparison is no longer "smart versus

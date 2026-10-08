@@ -41,14 +41,15 @@ from stacy.agent import greeting
 from stacy.agent.fastlane import answer_kind
 from stacy.agent.nodes import _same_words, build_agent
 from stacy.agent.runtime import CallRuntime
+from stacy.agent.speech import TTS_TEXT_TRANSFORMS
 from stacy.agent.tools import DeskOperations, build_function_tools
 from stacy.agent.turns import NoiseHeldTurnGuard
+from stacy.bench import BENCH_PREFIX
 from stacy.delivery import CallArchive, LoggingProvider, SmsSender, WebhookSender
 from stacy.delivery.sms import ConsentMissing
 from stacy.desk import CalendarStore, MessageStore
 from stacy.metrics import JsonlSink
 from stacy.metrics.live import format_reply
-from stacy.agent.speech import TTS_TEXT_TRANSFORMS
 from stacy.providers.base import PipelineConfig
 from stacy.providers.registry import (
     build_llm,
@@ -57,12 +58,14 @@ from stacy.providers.registry import (
     build_tts,
     build_turn_detector,
     build_vad,
-    prewarm as prewarm_models,
+    llm_conn_options,
     register_plugins,
     supported,
     turn_handling,
-    llm_conn_options,
     warm_llm_cache,
+)
+from stacy.providers.registry import (
+    prewarm as prewarm_models,
 )
 from stacy.tenants import TenantStore
 
@@ -78,8 +81,6 @@ SIP_CALLER_ATTR = "sip.phoneNumber"
 """Participant attribute holding the caller's own number, for {{system__caller_id}}."""
 
 DEFAULT_TENANT_DIR = "src/stacy/tenants/data"
-
-from stacy.bench import BENCH_PREFIX
 
 KEEP_WARM_PREFIX = "keepwarm-"
 """Rooms that exist only to keep the worker awake; see scripts/keep_warm.py."""

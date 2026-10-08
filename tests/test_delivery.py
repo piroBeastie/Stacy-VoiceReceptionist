@@ -113,7 +113,7 @@ class TestRetryLadder:
 
 class TestAutoDisable:
     def test_a_dead_consumer_stops_the_backlog(self) -> None:
-        sender, transport, _ = _sender([])
+        sender, _, _ = _sender([])
         sender.transport = RecordingTransport([404] * MAX_CONSECUTIVE_FAILURES * 2)
         for _ in range(MAX_CONSECUTIVE_FAILURES):
             asyncio.run(sender.send({}))

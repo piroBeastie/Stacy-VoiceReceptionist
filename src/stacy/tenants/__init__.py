@@ -8,4 +8,4 @@ from a :class:`Tenant` and never hardcode a business fact.
 from stacy.tenants.models import BookingWindow, Reseller, Staff, Tenant
 from stacy.tenants.store import TenantStore
 
-__all__ = ["Tenant", "Staff", "Reseller", "BookingWindow", "TenantStore"]
+__all__ = ["BookingWindow", "Reseller", "Staff", "Tenant", "TenantStore"]

@@ -14,7 +14,7 @@ from stacy.evals import active_criteria, active_fields
 from stacy.prompt import PromptBuilder
 from stacy.providers.base import TELEPHONY_FORMAT
 from stacy.providers.registry import pipeline_for
-from stacy.tenants import TenantStore
+from stacy.tenants import Tenant, TenantStore
 
 TENANT_DIR = "src/stacy/tenants/data"
 
@@ -278,7 +278,7 @@ class TestTenantRouting:
             store.for_number("+15550000000")
 
     def test_phone_numbers_must_be_e164(self, millbrook) -> None:
-        with pytest.raises(ValueError, match="E.164"):
+        with pytest.raises(ValueError, match=r"E\.164"):
             millbrook.model_validate({**millbrook.model_dump(), "phone_number": "860-398-9358"})
 
 

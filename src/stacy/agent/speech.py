@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator
+from typing import Any
 
 _TAG = re.compile(r"\[[A-Za-z][A-Za-z ]{0,30}\]")
 """A voice cue: a bracketed word or two. "[1]" is not one and is left alone."""

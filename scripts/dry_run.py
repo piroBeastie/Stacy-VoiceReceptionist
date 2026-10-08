@@ -24,12 +24,13 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import json  # noqa: E402
+
 from stacy.agent import CallRuntime, DeskOperations  # noqa: E402
 from stacy.delivery import LoggingProvider, SmsSender, sign, verify  # noqa: E402
 from stacy.delivery.sms import ConsentMissing  # noqa: E402
 from stacy.desk import CalendarStore, MessageStore  # noqa: E402
 from stacy.tenants import TenantStore  # noqa: E402
-import json  # noqa: E402
 
 
 def main() -> int:

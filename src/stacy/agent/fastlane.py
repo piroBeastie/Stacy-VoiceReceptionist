@@ -34,14 +34,14 @@ from typing import TYPE_CHECKING
 
 from stacy.agent.slots import (
     _DAYS,
-    FUEL_SYSTEMS,
     _SPELLED,
+    FUEL_SYSTEMS,
     BookingSlots,
     _said_digits,
-    spelled_name,
     heard_booking_details,
     normalize_phone,
     phone_in_speech,
+    spelled_name,
     spoken_digits,
 )
 from stacy.agent.tools import _day_name, _sentence, _spoken_list
@@ -134,8 +134,10 @@ _ASKS = {
     "street": re.compile(r"\b(?:street address|street name|the address|your address)\b"),
     "town": re.compile(r"\b(?:what|which) town\b"),
     "day": re.compile(
-        rf"\b(?:{'|'.join(_DAYS)})\b[^?]{{0,40}}\bor\b[^?]{{0,40}}\b(?:{'|'.join(_DAYS)}|later in the week|next week)\b"
-        r"|\b(?:what|which) day (?:works|would work|is best|is good|suits)\b|\bwhen would (?:work|suit)\b|\bwhen works\b"
+        rf"\b(?:{'|'.join(_DAYS)})\b[^?]{{0,40}}\bor\b[^?]{{0,40}}"
+        rf"\b(?:{'|'.join(_DAYS)}|later in the week|next week)\b"
+        r"|\b(?:what|which) day (?:works|would work|is best|is good|suits)\b"
+        r"|\bwhen would (?:work|suit)\b|\bwhen works\b"
     ),
 }
 _NOT_THE_VISIT = re.compile(
@@ -1071,7 +1073,7 @@ def _open_windows(runtime: CallRuntime, day: str, part: str = "") -> list[str]:
     bounds = {w.label: (w.start, w.end) for w in runtime.tenant.booking_windows}
     windows = []
     for label in cal.availability(runtime.tenant, target, now=now):
-        start, end = bounds.get(label, ("00:00", "23:59"))
+        _, end = bounds.get(label, ("00:00", "23:59"))
         if target == now.date():
             hour, minute = (int(x) for x in end.split(":"))
             if (hour * 60 + minute) - (now.hour * 60 + now.minute) < SAME_DAY_LEAD_MIN:

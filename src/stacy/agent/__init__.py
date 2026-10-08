@@ -11,9 +11,9 @@ from stacy.agent.runtime import CallRuntime, Outcome
 from stacy.agent.tools import DeskOperations
 
 __all__ = [
+    "DEFAULT_IGNORE_TERMS_EN",
     "BackchannelFilter",
     "CallRuntime",
-    "DEFAULT_IGNORE_TERMS_EN",
     "DeskOperations",
     "FillerPolicy",
     "Outcome",

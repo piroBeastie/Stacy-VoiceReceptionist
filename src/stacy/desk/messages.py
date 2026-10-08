@@ -118,4 +118,6 @@ class MessageStore:
         # Reverse first so append order breaks ties: the clock on Windows has
         # ~15ms resolution and two messages taken in one turn share a timestamp.
         # For an append-only log the file order is the authoritative ordering.
-        return sorted(reversed(out), key=lambda m: m.created_at, reverse=True)
+        return sorted(  # noqa: C414 - reversed() is what breaks ties by append order
+            reversed(out), key=lambda m: m.created_at, reverse=True
+        )
