@@ -103,6 +103,16 @@ class Appointment:
     """Captured during booking. The SMS sender refuses without it -- the prompt
     asks for consent, but only this field can withhold the message."""
 
+    supersedes: str = ""
+    """The appointment_id this record replaces, when the caller corrected it.
+
+    The file is append-only and these records are frozen, so a correction is
+    written as a new row pointing at the old one rather than an edit. Both
+    rows stay on disk -- which is the audit trail you want when a customer
+    says "I told her forty, not fourteen" -- and :meth:`CalendarStore._live`
+    is what everything else reads, so only the corrected visit counts.
+    """
+
     created_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
 
     def spoken_summary(self) -> str:
@@ -190,6 +200,17 @@ class CalendarStore:
                 continue
         return out
 
+    def _live(self, tenant_id: str) -> list[Appointment]:
+        """Appointments as they stand now, with corrected-away rows dropped.
+
+        Everything that counts visits reads this rather than :meth:`_load`.
+        A superseded row that still counted would hold a slot nobody is
+        coming to, and show the technician an address the caller corrected.
+        """
+        rows = self._load(tenant_id)
+        replaced = {a.supersedes for a in rows if a.supersedes}
+        return [a for a in rows if a.appointment_id not in replaced]
+
     def _append(self, appt: Appointment) -> None:
         with self._path(appt.tenant_id).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(asdict(appt), separators=(",", ":")) + "\n")
@@ -200,7 +221,7 @@ class CalendarStore:
         iso = day.isoformat()
         return sum(
             1
-            for a in self._load(tenant_id)
+            for a in self._live(tenant_id)
             if a.day == iso and a.window_label == window_label and a.kind == "appointment"
         )
 
@@ -322,6 +343,57 @@ class CalendarStore:
             self._append(appt)
         return appt
 
+    def amend(
+        self,
+        tenant: Tenant,
+        previous: Appointment,
+        *,
+        day: Date | None = None,
+        now: datetime | None = None,
+        **changes: object,
+    ) -> Appointment:
+        """Correct a visit already booked, returning the record that replaces it.
+
+        The caller said forty Elm, not fourteen. Booking that as a second
+        visit sends a technician to the wrong house *and* keeps the right one
+        waiting, so the new record carries `supersedes` and the old row stops
+        counting the moment it lands.
+
+        Capacity is only re-checked when the slot itself moves. Staying in the
+        window you already hold cannot overbook it -- and checking anyway
+        would refuse a caller correcting their own address in the last slot
+        of the day, which is the exact call this exists for.
+        """
+        target = day.isoformat() if day is not None else previous.day
+        window = str(changes.pop("window_label", previous.window_label))
+        if window not in {w.label for w in tenant.booking_windows}:
+            raise UnknownWindow(f"{window!r} is not a window {tenant.business_name} offers")
+
+        fields = {f: getattr(previous, f) for f in (
+            "customer_name", "phone", "street_address", "town", "problem",
+            "kind", "system_type", "fuel", "sms_consent",
+        )}
+        fields.update({k: v for k, v in changes.items() if k in fields})
+        if not str(fields["street_address"]).strip():
+            raise BookingError("a street address is required before a booking is real")
+
+        moved = (target, window) != (previous.day, previous.window_label)
+        with self._lock, self._across_processes(tenant.tenant_id):
+            if moved and window not in self.availability(
+                tenant, Date.fromisoformat(target), now=now
+            ):
+                raise SlotUnavailable(f"{window} on {target} is not available")
+            corrected = Appointment(
+                appointment_id=uuid.uuid4().hex[:12],
+                tenant_id=tenant.tenant_id,
+                day=target,
+                window_label=window,
+                supersedes=previous.appointment_id,
+                **fields,  # type: ignore[arg-type]
+            )
+            self._append(corrected)
+        return corrected
+
     def dispatch(
         self,
         tenant: Tenant,
@@ -369,7 +441,7 @@ class CalendarStore:
             return []
         matches = [
             a
-            for a in self._load(tenant_id)
+            for a in self._live(tenant_id)
             if "".join(c for c in a.phone if c.isdigit())[-10:] == digits
         ]
         # See MessageStore.all_for: append order breaks timestamp ties.

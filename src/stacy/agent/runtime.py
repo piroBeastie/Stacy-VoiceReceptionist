@@ -104,6 +104,15 @@ class CallRuntime:
     after the words, never in the middle of them. See stacy.agent.hangup.
     """
 
+    booked_at_turn: int = -1
+    """How many turns had been spoken when the live booking was made.
+
+    A correction has to be confirmed by a read-back of its own. Without
+    this, the yes that confirmed the original booking sits in the
+    transcript looking exactly like a yes to the correction, and the
+    visit moves to an address the caller never heard back.
+    """
+
     last_caller_turn: str = ""
     """What the caller said in their previous turn, for a number read over two."""
 
@@ -300,6 +309,7 @@ class CallRuntime:
         property worth trusting on this particular path.
         """
         self.appointments.append(appt)
+        self.booked_at_turn = len(self.transcript)
         if self.outcome == "safety_override":
             log.error(
                 "call %s: a booking was recorded after the safety override latched",
@@ -308,6 +318,23 @@ class CallRuntime:
             return
         if appt.kind == "emergency" or self.outcome != "dispatched":
             self.outcome = "dispatched" if appt.kind == "emergency" else "booked"
+
+    def note_amendment(self, previous: Appointment, corrected: Appointment) -> None:
+        """Swap a booking for the corrected version of itself.
+
+        Appending would leave the call reporting two visits, and the
+        post-call record is what the office reads. One visit was booked
+        and one visit is happening.
+        """
+        self.appointments = [
+            corrected if a.appointment_id == previous.appointment_id else a
+            for a in self.appointments
+        ]
+        self.booked_at_turn = len(self.transcript)
+        log.info(
+            "call %s: booking %s corrected to %s",
+            self.call_id, previous.appointment_id, corrected.appointment_id,
+        )
 
     def note_message(self, msg: Message) -> None:
         """Record a taken message, unless something louder already happened."""

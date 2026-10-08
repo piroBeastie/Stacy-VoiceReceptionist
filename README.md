@@ -159,7 +159,7 @@ client two cheap and vendor swaps a config change.
 
 A third rule now joins them: **nothing outside `agent/nodes.py`,
 `agent/entrypoint.py` and `bench/` imports the SDK at module scope.** Almost all
-of the 645 tests run with no vendor package installed, which is why the whole
+of the 657 tests run with no vendor package installed, which is why the whole
 policy layer is testable at all.
 
 ### The instruments
@@ -487,10 +487,51 @@ said on a call before the guard existed.
 | `lookup_customer` | `desk/calendar.py` | — (pre-fills the slots on a hit) |
 | `check_availability` | `desk/calendar.py` | closed day, elapsed window, full window |
 | `record_details` | `agent/slots.py` | town outside the service area; a phone number the caller never said |
-| `book_appointment` | `desk/calendar.py` + slots | anything still missing, unknown window, at capacity, the details were never read back, the caller's answer to the read-back was a no or a correction, or this exact visit is already booked |
+| `book_appointment` | `desk/calendar.py` + slots | anything still missing, unknown window, at capacity, the details were never read back, the caller's answer to the read-back was a no or a correction, or this exact visit is already booked. A detail corrected after booking amends that visit instead of doubling it, and needs its own read-back |
 | `dispatch_emergency` | `desk/calendar.py` + slots | name/number/address/town/problem missing, or a technician is already on the way to that address |
 | `take_message` | `desk/messages.py` | — |
 | `end_call` | `agent/hangup.py` | anything is held with nothing booked, unless the caller said they were going; always, while the gas instruction is latched |
+
+### When the caller corrects something after it's booked
+
+"You're all set for tomorrow, eleven to two." — "Wait, sorry, it's *forty*
+Elm, not fourteen."
+
+Until this change that produced a **second** appointment. The wrong one stayed
+on the board, a technician could drive to it, and it held a slot nobody was
+coming to. The caller heard "all set" twice and had no way to know.
+
+A correction now replaces the visit instead of adding one. Three things make
+that safe:
+
+**It is written, never erased.** The calendar is append-only JSONL and an
+`Appointment` is frozen, so the correction is a new row carrying
+`supersedes: <old id>`. Both rows stay on disk — which is what you want when a
+customer says "I told her forty, not fourteen" — and `_live()` is what
+everything else reads, so only the corrected visit counts toward capacity,
+shows in the history, or reaches the technician.
+
+**A correction is a booking, so it needs its own yes.** The read-back that
+confirmed the original named the *old* address and happened before the
+correction, so reusing it would move a van to a house the caller never heard
+back. `_correction_confirmed()` requires a read-back that came after the
+booking *and* contains the changed value, then a plain yes. Until that
+arrives, the original visit stands.
+
+**A second job is not a correction.** This is the mistake that would be worse
+than the duplicate, because the caller cannot hear it happen:
+
+| They said | Read as | Why |
+|---|---|---|
+| "Sorry, it's 40 Elm, not 14." | correction | a fix, nothing added |
+| "Can you also look at the AC while you're here?" | second visit | "also" |
+| "Actually, can you *also* look at the AC?" | second visit | "also" outranks "actually" |
+| day changed, nothing said | second visit | silence is not a correction |
+
+A changed detail is never enough on its own — one call can book for two
+people, add a second address, or add a second job. It takes the caller
+actually saying so, and the last row is deliberate: replacing a booking on a
+silent change is the one mistake the caller would not hear and could not undo.
 
 ### Ending the call
 
@@ -702,7 +743,7 @@ fail. Run it first; it is cheaper than a call.
 python -m pytest -q
 ```
 
-645 tests, almost none of which need a vendor package. They are not style checks — each
+657 tests, almost none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

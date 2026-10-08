@@ -62,7 +62,7 @@ Two things about this diagram matter more than they look:
 
 ## 3. The repo, module by module
 
-~9,000 lines of source, 645 tests across 22 files.
+~9,000 lines of source, 657 tests across 23 files.
 
 | Module | What it owns |
 |---|---|
@@ -71,6 +71,7 @@ Two things about this diagram matter more than they look:
 | `agent/fastlane.py` | **The desk.** The biggest module (1,200 lines) and the heart of the design: scripted turns answered deterministically, with no model call. |
 | `agent/slots.py` | The booking's working memory: what we know, what is still missing, in the prompt's own asking order. Phone/name/address parsing. |
 | `agent/tools.py` | The seven tools the model can call, and every guard that stops a tool doing something irreversible and wrong. |
+| `desk/calendar.py` | Availability, booking, and the superseding record that makes a correction replace a visit instead of adding one. |
 | `agent/hangup.py` | Ending the call: the farewell read from the transcript in code, and the `end_call` tool for a caller who was never a customer. |
 | `agent/speech.py` | Text on its way to the voice: audio tags stripped, markdown stripped, sentence flushing. |
 | `agent/safety.py` | The gas/CO override. Latches in code, so no sampling step can go wrong. |
@@ -368,6 +369,50 @@ writing the regex that judges them — and the test file now carries all 28.
 
 ---
 
+### 8.8 "Forty Elm, not fourteen"
+
+Stacy reads the details back and books on a yes, so a correction *before* the
+booking has always been safe — the read-back guard refuses while the caller's
+last answer was a fix rather than a yes. I was asked how corrections reach the
+CRM and went to check the case I had not: a correction that arrives *after*
+"you're all set".
+
+It booked a second appointment. The wrong address stayed live, a technician
+could drive to it, and it held a slot nobody was coming to.
+
+The fix was a superseding record — append-only, so both rows survive as the
+audit trail, with everything that counts visits reading through a filter that
+drops the replaced one. But the interesting part was the second bug, which the
+first fix created:
+
+```
+caller: it's 40 Elm, not 14
+agent:  [calls book_appointment]
+→ visit moved, with no new confirmation
+```
+
+The read-back check passed, because the caller's "yes" to the *original*
+read-back was still sitting in the transcript, and that read-back named the
+old address. A correction needs its own read-back, carrying the corrected
+value, after the booking. Otherwise a van goes to a house the caller never
+heard said back to them.
+
+The third problem is the one with no clean answer. "Make it Thursday instead"
+and "can you also come Thursday" change the same fields. The only honest
+signal is the caller's own words, so a changed detail alone never amends — it
+takes a fix word, and "also" or "as well" overrules it. A caller who moves a
+day without saying anything corrective still gets two visits. That is the
+conservative side on purpose: a duplicate is visible to everyone, and a
+silently cancelled visit is visible to no one until a technician doesn't turn
+up.
+
+**The lesson:** when you make an operation idempotent, check what the *old*
+confirmation now authorises. I would not have found the stale-yes bug by
+testing the feature I had just written — it only showed up because the test
+for "it waits for the read-back" failed for a reason I had not predicted.
+
+---
+
 ## 9. Numbers worth memorising
 
 - **Reply time: 0.95 s median, 1.5 s p90**, measured caller-stops-talking to
@@ -377,7 +422,7 @@ writing the regex that judges them — and the test file now carries all 28.
   end-of-turn wait **~0.35 s**; network to the model **48 ms**.
 - Prompt: ~8,000 tokens, ~25,000 characters, cached every turn.
 - Cost of the prompt in latency: **25 ms**. Trimming it is not a latency lever.
-- Test suite: **645 tests**, ~9,000 lines of source.
+- Test suite: **657 tests**, ~9,000 lines of source.
 
 Always state the definition with the number. Many vendors quote a figure that
 excludes the pause used to be sure the caller has finished, or that measures the

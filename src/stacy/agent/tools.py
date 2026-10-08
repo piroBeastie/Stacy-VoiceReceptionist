@@ -55,6 +55,29 @@ _CORRECTION = re.compile(
     re.I,
 )
 """Words that answer a read-back with a fix rather than a yes."""
+_A_FIX = re.compile(
+    r"\b(?:wrong|not right|isn'?t right|actually|instead|mistake|mixed up|sorry|my bad"
+    r"|i meant|meant to say|make (?:it|that)|scratch that|correction|should (?:be|say)"
+    r"|that'?s not|it'?s not|no,? it'?s|no,? the|not \w+,? it'?s)\b",
+    re.I,
+)
+"""Someone fixing something they already said.
+
+Wider than :data:`_CORRECTION`, which only has to read a yes-or-no answer to a
+read-back. This reads ordinary speech, where a correction arrives as "wait,
+sorry, it's forty Elm, not fourteen" -- no part of which is a no.
+"""
+_ANOTHER_VISIT = re.compile(
+    r"\b(?:also|another|second (?:visit|appointment|one)|as well|too|both"
+    r"|while you'?re at it)\b",
+    re.I,
+)
+"""Words that make a new day a second visit rather than a change of mind.
+
+A caller moving an appointment and a caller adding one say nearly the same
+thing -- "Thursday" -- and getting it wrong either doubles the visit or
+quietly cancels one. This is the only honest signal in the transcript.
+"""
 _STREET_WORDS = re.compile(
     r"\b(street|st|road|rd|avenue|ave|lane|ln|drive|court|ct|place|way|boulevard|blvd"
     r"|circle|terrace|highway|route|parkway|pike)\b",
@@ -480,6 +503,175 @@ class DeskOperations:
 
     # ---- writing ---------------------------------------------------------
 
+    def _changed_values(self, booked: Any) -> list[str]:
+        """The corrected values, as the caller would hear them read back."""
+        slots = self.runtime.slots
+        changed = []
+        for field in ("customer_name", "street_address", "town", "problem"):
+            value = getattr(slots, field)
+            if value and value != getattr(booked, field):
+                changed.append(value)
+        if slots.window and slots.window != booked.window_label:
+            changed.append(slots.window)
+        if slots.day:
+            try:
+                day = resolve_day(self._tenant, slots.day, now=self.runtime.now())
+            except BookingError:
+                day = None
+            if day is not None and day.isoformat() != booked.day:
+                changed.append(slots.day)
+        return changed
+
+    def _correction_confirmed(self, booked: Any) -> bool:
+        """Whether the caller has heard the *corrected* details back and agreed.
+
+        Two things the original read-back cannot stand in for. It happened
+        before the correction, and it named the old address -- so reusing
+        it would move a technician to a house the caller never confirmed,
+        on the strength of a yes they gave to something else.
+        """
+        transcript = self.runtime.transcript
+        if not any(t.get("role") == "agent" for t in transcript):
+            return True  # driven directly, not on a call
+        since = transcript[max(self.runtime.booked_at_turn, 0):]
+        last_user = max(
+            (i for i, t in enumerate(since) if t.get("role") == "user"), default=-1
+        )
+        if last_user < 0:
+            return False
+        recent = [
+            t.get("text", "").lower() for t in since[:last_user] if t.get("role") == "agent"
+        ][-3:]
+        wanted = [v.lower() for v in self._changed_values(booked)]
+        return any(all(value in line for value in wanted) for line in recent)
+
+    def _amend(self, previous: Any) -> str:
+        """Write the caller's correction over the visit already booked.
+
+        The read-back guards still apply. A correction is a booking: it
+        decides where a technician drives, so it waits for the same plain
+        yes the original did, and the caller hears the corrected version
+        read back before anything moves.
+        """
+        slots = self.runtime.slots
+        if not slots.check_town(self._tenant):
+            return f"{slots.rejected_town} is outside the service area — don't book it."
+        if not slots.complete:
+            return f"Not yet — still need {slots.missing_spoken()}."
+        if not self._correction_confirmed(previous):
+            return (
+                "Not yet: read the corrected details back -- the bit that changed, in "
+                "full -- and call book_appointment again once they say yes. The earlier "
+                "yes was to the old version, so it does not count. The old visit stands."
+            )
+        turned_down = self._turned_the_read_back_down()
+        if turned_down:
+            return (
+                f"Not yet: their answer was {turned_down!r}, which isn't a yes. Ask what "
+                "needs changing, fix it, and read it back again. Nothing has moved."
+            )
+
+        now = self.runtime.now()
+        day = None
+        if slots.day:
+            try:
+                day = resolve_day(self._tenant, slots.day, now=now)
+            except BookingError:
+                return "I didn't catch the day. Today, or tomorrow?"
+
+        cal = self.runtime.calendar
+        try:
+            corrected = cal.amend(
+                self._tenant,
+                previous,
+                day=day,
+                now=now,
+                window_label=slots.window or previous.window_label,
+                customer_name=slots.customer_name,
+                phone=slots.phone or previous.phone,
+                street_address=slots.street_address,
+                town=slots.town,
+                problem=slots.problem,
+                sms_consent=slots.sms_consent,
+            )
+        except SlotUnavailable:
+            return (
+                f"That window is full, so nothing has changed -- they are still booked for "
+                f"{_day_name(Date.fromisoformat(previous.day), now.date())}, "
+                f"{previous.window_label}. Offer another window."
+            )
+        except BookingError as exc:
+            return f"Couldn't change it: {exc}. The original visit still stands."
+
+        self.runtime.note_amendment(previous, corrected)
+        when = _day_name(Date.fromisoformat(corrected.day), now.date())
+        return (
+            f"Changed, not booked twice: {corrected.customer_name}, "
+            f"{corrected.street_address} in {corrected.town}, {when} "
+            f"{corrected.window_label}, for {corrected.problem}. The earlier version is "
+            "off the books. Tell them what changed -- don't say they're booked again."
+        )
+
+    def _correcting(self) -> Any:
+        """The visit this call booked that the caller has since corrected.
+
+        Returns None when there is nothing to correct, and None when the
+        caller is asking for a *second* visit -- a real thing, and the
+        reason this cannot simply replace whatever was booked last.
+
+        A changed detail is not enough on its own, and three real calls say
+        why: "can you look at the AC while you're here" changes the problem,
+        "and also my mother's place" changes the address, and one call can
+        book for two different people. Each of those is a second visit, and
+        quietly replacing the first would be worse than the duplicate this
+        is here to prevent.
+
+        So it takes the caller saying so. They always do -- "wait, sorry,
+        it's forty, not fourteen" -- and "also", "as well", "while you're at
+        it" overrule it, because that is someone adding a job.
+        """
+        booked = next(
+            (a for a in reversed(self.runtime.appointments) if a.kind == "appointment"),
+            None,
+        )
+        if booked is None:
+            return None
+
+        if not self._differs_from(booked):
+            return None
+
+        said = self._since_the_booking()
+        if _ANOTHER_VISIT.search(said):
+            return None  # they want both, and both is what they get
+        return booked if _A_FIX.search(said) else None
+
+    def _differs_from(self, booked: Any) -> bool:
+        """Whether the slots now describe a different visit than the one booked."""
+        slots = self.runtime.slots
+        for field in ("customer_name", "street_address", "town", "problem"):
+            value = getattr(slots, field)
+            if value and value != getattr(booked, field):
+                return True
+        if slots.window and slots.window != booked.window_label:
+            return True
+        if slots.day:
+            try:
+                day = resolve_day(self._tenant, slots.day, now=self.runtime.now())
+            except BookingError:
+                return False
+            return day.isoformat() != booked.day
+        return False
+
+    def _since_the_booking(self) -> str:
+        """What the caller has said since the last booking landed."""
+        said: list[str] = []
+        for turn in reversed(self.runtime.transcript):
+            if turn.get("role") == "user":
+                said.append(turn.get("text", ""))
+            if len(said) >= 4:
+                break
+        return " ".join(said)
+
     def _booked_already(self) -> Any:
         """The appointment this call already made for the visit now recorded, if any.
 
@@ -536,7 +728,7 @@ class DeskOperations:
         if booked is not None:
             # The desk books on a yes to the read-back. A model that books the
             # same visit again would double it, or be told the window just filled.
-            # A second visit on another day is a real second booking.
+            # A second visit on another day is a real booking.
             now = self.runtime.now()
             when = _day_name(Date.fromisoformat(booked.day), now.date())
             return (
@@ -544,6 +736,10 @@ class DeskOperations:
                 f"{booked.street_address}, {when}, {booked.window_label}. "
                 "It's done -- don't book it again."
             )
+
+        correcting = self._correcting()
+        if correcting is not None:
+            return self._amend(correcting)
         if not slots.check_town(self._tenant):
             return f"{slots.rejected_town} is outside the service area — don't book it."
         if not slots.complete:
