@@ -9,21 +9,31 @@ survives the call and refuses to double-book.
 
 Storage is append-only JSONL per tenant. Same reasoning as the metrics sink: it
 is greppable, it survives a crashed worker, and it needs no service running to
-inspect after a bad call. Swap in Postgres behind :class:`CalendarStore` when
-two workers need to book the same calendar -- the file lock below is per
-process and is honest about that.
+inspect after a bad call.
+
+The capacity check and the append are one critical section, held by a thread
+lock *and* by a lock file the operating system arbitrates, so a second worker
+process cannot take the same last slot. Two callers reaching two workers in
+the same second is not a hypothetical: it is a Tuesday morning after an ad
+runs, and the symptom is two vans at two houses in one window. Postgres behind
+:class:`CalendarStore` is still the better answer at volume -- this is the
+honest version of a file store, not a replacement for one.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import date as Date
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import IO, Literal
 from zoneinfo import ZoneInfo
 
 from stacy.tenants.models import Tenant
@@ -31,6 +41,30 @@ from stacy.tenants.models import Tenant
 WEEKDAY_NAMES = (
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 )
+
+
+LOCK_WAIT_S = 5.0
+"""Longest wait for another process to leave the calendar's critical section."""
+
+if os.name == "nt":  # pragma: no cover - one branch per host
+    import msvcrt
+
+    def _take_lock(handle: IO[bytes]) -> None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+    def _drop_lock(handle: IO[bytes]) -> None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:  # pragma: no cover - one branch per host
+    import fcntl
+
+    def _take_lock(handle: IO[bytes]) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _drop_lock(handle: IO[bytes]) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class BookingError(Exception):
@@ -114,6 +148,33 @@ class CalendarStore:
 
     def _path(self, tenant_id: str) -> Path:
         return self._dir / f"appointments-{tenant_id}.jsonl"
+
+    @contextmanager
+    def _across_processes(self, tenant_id: str) -> Iterator[None]:
+        """Hold this tenant's calendar against every other process.
+
+        Gives up after `LOCK_WAIT_S` rather than holding a caller on the line:
+        a refusal the agent can speak is better than silence, and a window
+        another worker has been sitting inside for five seconds is gone anyway.
+        """
+        self._dir.mkdir(parents=True, exist_ok=True)
+        path = self._dir / f"appointments-{tenant_id}.lock"
+        with path.open("a+b") as handle:
+            deadline = time.monotonic() + LOCK_WAIT_S
+            while True:
+                try:
+                    _take_lock(handle)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise BookingError(
+                            "the calendar is busy -- take a message and call them back"
+                        ) from None
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                _drop_lock(handle)
 
     def _load(self, tenant_id: str) -> list[Appointment]:
         path = self._path(tenant_id)
@@ -241,7 +302,7 @@ class CalendarStore:
             # The prompt says never confirm without one; this makes it structural.
             raise BookingError("a street address is required before a booking is real")
 
-        with self._lock:
+        with self._lock, self._across_processes(tenant.tenant_id):
             if window_label not in self.availability(tenant, day, now=now):
                 raise SlotUnavailable(f"{window_label} on {day.isoformat()} is not available")
             appt = Appointment(
@@ -279,7 +340,7 @@ class CalendarStore:
         whole point of the emergency branch in the prompt.
         """
         now = now or datetime.now(ZoneInfo(tenant.timezone))
-        with self._lock:
+        with self._lock, self._across_processes(tenant.tenant_id):
             appt = Appointment(
                 appointment_id=uuid.uuid4().hex[:12],
                 tenant_id=tenant.tenant_id,

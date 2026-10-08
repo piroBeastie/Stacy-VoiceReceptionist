@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from stacy.prompt import PromptBuilder  # noqa: E402
 from stacy.providers.base import TELEPHONY_FORMAT  # noqa: E402
 from stacy.providers.registry import pipeline_for  # noqa: E402
+from stacy.retention import RetentionPolicy  # noqa: E402
 from stacy.tenants import TenantStore  # noqa: E402
 
 OK, WARN, FAIL = "PASS", "WARN", "FAIL"
@@ -343,16 +344,23 @@ def check_known_gaps() -> None:
         "SMS provider",
         "LoggingProvider — confirmations are written to the log, not sent",
     )
-    check(
-        WARN,
-        "retention",
-        "transcripts, traces and the calendar are plaintext on disk with no expiry",
+    policy, chosen = RetentionPolicy.from_env()
+    swept = (
+        f"calls {policy.calls_days}d, traces {policy.traces_days}d, "
+        f"messages {policy.messages_days}d, appointments "
+        f"{policy.appointments_days or 'kept'}"
     )
     check(
-        WARN,
+        OK if chosen else WARN,
+        "retention",
+        swept + (" (this deployment's own windows)" if chosen else
+                 " — the defaults; set STACY_RETAIN_*_DAYS to choose, and schedule "
+                 "scripts/retention_sweep.py --apply, or the plaintext stays forever"),
+    )
+    check(
+        OK,
         "horizontal scale",
-        "CalendarStore's lock is per-process — run one worker, or two can "
-        "double-book the same window",
+        "the calendar's critical section is held across processes by a lock file",
     )
 
 

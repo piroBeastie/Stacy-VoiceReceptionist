@@ -1,6 +1,8 @@
 {
   "name": "stacy-dispatch",
-  "trunk_ids": [],
+  "trunk_ids": [
+    "ST_QdmtGTupQFfv"
+  ],
   "rule": {
     "dispatchRuleIndividual": {
       "roomPrefix": "call"

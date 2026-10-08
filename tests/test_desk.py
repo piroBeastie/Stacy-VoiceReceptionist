@@ -7,7 +7,10 @@ twice; "we'll text you a confirmation" is only true if consent was captured.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -316,3 +319,51 @@ class TestSmsConsentIsAControlNotAScript:
         body = SmsSender(provider=LoggingProvider()).confirmation_body(tenant, appt)
         assert "Tuesday, September 15" in body
         assert "2026-09-15" not in body
+
+
+class TestTwoWorkersOneCalendar:
+    """The calendar a second worker process has to respect.
+
+    LiveKit Cloud runs one worker today and more than one the day traffic
+    justifies it. A thread lock does nothing then: two callers in the same
+    second both pass the capacity check, and two vans go to one window.
+    Driven through tests/_book_once.py, because one interpreter cannot show it.
+    """
+
+    def _book_in_another_process(self, calendar_dir, day: date, lock_wait: str = "5") -> str:
+        root = Path(__file__).resolve().parents[1]
+        done = subprocess.run(
+            [
+                sys.executable,
+                str(root / "tests" / "_book_once.py"),
+                str(root / "src"),
+                str(root / "src" / "stacy" / "tenants" / "data"),
+                str(calendar_dir),
+                day.isoformat(),
+                lock_wait,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr[-400:]
+        return done.stdout.strip().splitlines()[-1]
+
+    def test_a_second_process_cannot_take_the_same_last_slot(self, tmp_path, monday_9am) -> None:
+        day = monday_9am.date()
+        assert self._book_in_another_process(tmp_path, day) == "booked"
+        # Capacity one, same window, a different process: the slot is gone.
+        assert self._book_in_another_process(tmp_path, day) == "SlotUnavailable"
+
+    def test_a_held_lock_refuses_rather_than_hanging_the_call(
+        self, tmp_path, tenant: Tenant, monday_9am
+    ) -> None:
+        store = CalendarStore(tmp_path)
+        with store._across_processes(tenant.tenant_id):
+            # Another worker is inside the critical section. This one waits
+            # the (shortened) limit and then says so, rather than leaving a
+            # caller listening to silence.
+            said = self._book_in_another_process(tmp_path, monday_9am.date(), lock_wait="0.2")
+            assert said == "BookingError"
+        # Released: the next process books normally.
+        assert self._book_in_another_process(tmp_path, monday_9am.date()) == "booked"
