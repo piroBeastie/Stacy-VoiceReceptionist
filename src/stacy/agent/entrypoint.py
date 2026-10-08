@@ -39,6 +39,7 @@ from typing import Any
 
 from stacy.agent import greeting
 from stacy.agent.fastlane import answer_kind
+from stacy.agent.hangup import farewell_said, hang_up
 from stacy.agent.nodes import _same_words, build_agent
 from stacy.agent.runtime import CallRuntime
 from stacy.agent.speech import TTS_TEXT_TRANSFORMS
@@ -281,7 +282,7 @@ async def entrypoint(ctx: Any) -> None:
     # Words, not audio, decide whether a noisy line is the caller or the room;
     # see stacy.agent.turns.
     guard = NoiseHeldTurnGuard(commit_after_s=cfg.turn.noise_commit_after_s)
-    _wire(session, runtime, guard, session_kwargs["vad"])
+    _wire(session, runtime, guard, session_kwargs["vad"], ctx)
     watchdog = asyncio.ensure_future(_silence_watchdog(session, runtime, guard))
     ctx.add_shutdown_callback(lambda: _on_shutdown(runtime, watchdog))
 
@@ -368,7 +369,13 @@ def _pace(vad: Any, runtime: CallRuntime, state: dict[str, Any]) -> None:
     log.info("call %s: waiting %.2fs of silence for a %s answer", runtime.call_id, pause, kind or "normal")
 
 
-def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard, vad: Any = None) -> None:
+def _wire(
+    session: Any,
+    runtime: CallRuntime,
+    guard: NoiseHeldTurnGuard,
+    vad: Any = None,
+    ctx: Any = None,
+) -> None:
     """Attach conversation bookkeeping, and the events that explain a bad call.
 
     Only events that carry information the pipeline nodes cannot see are
@@ -453,6 +460,21 @@ def _wire(session: Any, runtime: CallRuntime, guard: NoiseHeldTurnGuard, vad: An
         cut = " (CUT OFF)" if getattr(item, "interrupted", False) else ""
         log.info("said %s%s: %r", runtime.call_id, cut, " ".join(text.split())[:160])
         _pace(vad, runtime, state)
+
+        # A receptionist says bye and puts the phone down. See stacy.agent.hangup:
+        # decided from the transcript, never by the model, and only once the
+        # caller has said they are done.
+        reason = ""
+        if ctx is not None:
+            # The intent is consumed either way. A goodbye the caller talked
+            # over is not a goodbye, and leaving the intent set would hang up
+            # a turn later, after they had started a new sentence.
+            reason, runtime.end_call = runtime.end_call, ""
+            reason = "" if cut else (reason or farewell_said(runtime))
+        if reason:
+            ending = asyncio.ensure_future(hang_up(ctx, session, runtime, reason))
+            _BACKGROUND.add(ending)
+            ending.add_done_callback(_BACKGROUND.discard)
 
     @session.on("overlapping_speech")  # type: ignore[attr-defined]
     def _on_overlap(ev: Any) -> None:

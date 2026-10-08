@@ -646,6 +646,39 @@ class DeskOperations:
         self.runtime.note_booking(appt)
         return f"On-call tech dispatched to {appt.street_address}, {appt.town}."
 
+    def end_call(self, reason: str = "") -> str:
+        """Hang up, for a call that was never going to be a booking.
+
+        A wrong number, a sales call, somebody who will not stop swearing: a
+        person on a desk ends those, and so can this. What it refuses is the
+        case that would be unforgivable -- hanging up holding half of
+        somebody's address -- and anything at all while the gas instruction
+        is latched, where the caller leaving the line is the whole point.
+        """
+        if self.runtime.safety.latched:
+            return (
+                "No. The instruction stands until they are out of the house -- repeat it, and let them go."
+            )
+        slots = self.runtime.slots
+        collected = [f for f in ("customer_name", "phone", "street_address", "town", "problem")
+                     if getattr(slots, f)]
+        finished = bool(self.runtime.appointments) or self.runtime.outcome == "message"
+        if collected and not finished and not self._caller_signed_off():
+            return (
+                f"Not yet: you have {', '.join(collected)} written down and nothing booked. "
+                "Finish it or take a message. If they want to go, let them say so first."
+            )
+        self.runtime.end_call = reason.strip() or "the agent ended the call"
+        log.info("call %s: end_call -- %s", self.runtime.call_id, self.runtime.end_call)
+        return "Alright. Say your last line now; the line closes once you stop speaking."
+
+    def _caller_signed_off(self) -> bool:
+        """Whether the caller's last words were them ending the call."""
+        from stacy.agent.hangup import caller_signed_off  # noqa: PLC0415 - import cycle
+
+        said = [t.get("text", "") for t in self.runtime.transcript if t.get("role") == "user"]
+        return bool(said) and caller_signed_off(said[-1])
+
     def take_message(
         self,
         *,
@@ -875,6 +908,22 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
             for_staff=for_staff,
         )
 
+    @function_tool
+    async def end_call(ctx: RunContext, reason: str) -> str:
+        """End the call, for someone who is not a customer.
+
+        A wrong number, a sales call, or somebody abusive after you have
+        already said you are happy to help when they are ready. Say your
+        line first -- the call ends when you stop speaking, not before.
+
+        Never for a caller you are still collecting details from: finish the
+        booking or take a message. Never during the gas instruction.
+
+        Args:
+            reason: Why, in a few words. It goes in the call record.
+        """
+        return await run(ctx, "end_call", ops.end_call, reason=reason)
+
     return [
         check_availability,
         lookup_customer,
@@ -882,4 +931,5 @@ def build_function_tools(ops: DeskOperations) -> list[Any]:
         book_appointment,
         dispatch_emergency,
         take_message,
+        end_call,
     ]

@@ -159,7 +159,7 @@ client two cheap and vendor swaps a config change.
 
 A third rule now joins them: **nothing outside `agent/nodes.py`,
 `agent/entrypoint.py` and `bench/` imports the SDK at module scope.** Almost all
-of the 602 tests run with no vendor package installed, which is why the whole
+of the 637 tests run with no vendor package installed, which is why the whole
 policy layer is testable at all.
 
 ### The instruments
@@ -478,7 +478,7 @@ number rather than a hunch.
 
 ## What the agent can actually do
 
-Six tools, all backed by real stores rather than placeholders. The "refuses
+Seven tools, all backed by real stores rather than placeholders. The "refuses
 when" column is the interesting one: every entry in it is a sentence the agent
 said on a call before the guard existed.
 
@@ -490,6 +490,48 @@ said on a call before the guard existed.
 | `book_appointment` | `desk/calendar.py` + slots | anything still missing, unknown window, at capacity, the details were never read back, the caller's answer to the read-back was a no or a correction, or this exact visit is already booked |
 | `dispatch_emergency` | `desk/calendar.py` + slots | name/number/address/town/problem missing, or a technician is already on the way to that address |
 | `take_message` | `desk/messages.py` | — |
+| `end_call` | `agent/hangup.py` | details half-collected and nothing booked, unless the caller said they were going; always, while the gas instruction is latched |
+
+### Ending the call
+
+A receptionist says "bye", waits a beat, and puts the phone down. For most of
+this project Stacy said "bye" and then sat there, because the prompt said
+outright that she had no way to hang up -- the line stayed open until the caller
+gave up or the silence watchdog closed it thirty seconds later. On a mobile,
+that half-minute of nothing is the part of the call people remember.
+
+There are two ways a call ends now, and the split is deliberate.
+
+**The normal one is decided in code, not by the model.** `agent/hangup.py`
+reads the transcript: the caller said they were done, the agent's reply was a
+sign-off, and the agent spoke last. All three, or nothing happens. The model is
+never asked whether the call is over, because the one question you do not want
+answered by a language model is "should I hang up on this person?"
+
+Reading "the caller said they were done" is finer work than it looks. The
+sign-off has to be the caller's whole last clause, not merely the end of it:
+
+| They said | Over? | Why |
+|---|---|---|
+| "No, that's it. Thanks." | yes | the thanks is stripped, the clause is the sign-off |
+| "Bye, but first — how much is it?" | no | the last clause is a question, and answering it is the job |
+| "My name is Bye" | no | Deepgram hears names as all sorts of things on an 8 kHz line |
+
+That last row is the whole reason the check is written this way. An earlier
+version matched the end of the turn and would have hung up on somebody who was
+introducing themselves.
+
+**The other way is `end_call`, for a caller who was never going to be a
+customer** -- a wrong number, a sales call, somebody abusive who has already
+been offered help once. It refuses while a booking is half-collected, because
+hanging up on someone mid-address is the worst version of this feature, and it
+refuses outright while the gas-leak script is latched, where the only thing
+that matters is the caller getting out of the house.
+
+Both paths call `session.drain()` first, so the goodbye finishes playing before
+the SIP leg drops -- cutting someone off mid-word is the same bug heard from
+the other end. And if the caller speaks again *during* that drain, the hangup
+is abandoned: "oh wait, one more thing" is a real thing people say.
 
 ### Callers don't answer one question at a time
 
@@ -644,7 +686,7 @@ fail. Run it first; it is cheaper than a call.
 python -m pytest -q
 ```
 
-602 tests, almost none of which need a vendor package. They are not style checks — each
+637 tests, almost none of which need a vendor package. They are not style checks — each
 assertion corresponds to a prompt line that exists because something went wrong
 on a real call, or to a promise the agent makes to a caller.
 

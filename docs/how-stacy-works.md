@@ -62,7 +62,7 @@ Two things about this diagram matter more than they look:
 
 ## 3. The repo, module by module
 
-~8,900 lines of source, 602 tests across 20 files.
+~9,000 lines of source, 637 tests across 22 files.
 
 | Module | What it owns |
 |---|---|
@@ -70,7 +70,8 @@ Two things about this diagram matter more than they look:
 | `agent/nodes.py` | The three overridable pipeline nodes — `stt_node`, `llm_node`, `tts_node` — plus `on_user_turn_completed`, the hook where our code reads the caller's turn before the model does. |
 | `agent/fastlane.py` | **The desk.** The biggest module (1,200 lines) and the heart of the design: scripted turns answered deterministically, with no model call. |
 | `agent/slots.py` | The booking's working memory: what we know, what is still missing, in the prompt's own asking order. Phone/name/address parsing. |
-| `agent/tools.py` | The six tools the model can call, and every guard that stops a tool doing something irreversible and wrong. |
+| `agent/tools.py` | The seven tools the model can call, and every guard that stops a tool doing something irreversible and wrong. |
+| `agent/hangup.py` | Ending the call: the farewell read from the transcript in code, and the `end_call` tool for a caller who was never a customer. |
 | `agent/speech.py` | Text on its way to the voice: audio tags stripped, markdown stripped, sentence flushing. |
 | `agent/safety.py` | The gas/CO override. Latches in code, so no sampling step can go wrong. |
 | `agent/turns.py` | Noise-held turn guard: answering when background noise, not the caller, is holding the turn open. |
@@ -94,7 +95,7 @@ caller turn
     │
     ├─ does the desk recognise this exact situation? ──yes──> deterministic reply (~0.4 s)
     │                                                          record what was heard
-    └─ no ──> the model, with the prompt, the history and six tools (~1.0–1.2 s)
+    └─ no ──> the model, with the prompt, the history and seven tools (~1.0–1.2 s)
 ```
 
 The desk answers a turn only when the situation is unambiguous: a phone number
@@ -338,6 +339,35 @@ live line, know what "undo" is before you touch it.
 
 ---
 
+### 8.7 "My name is Bye"
+
+Stacy could not hang up. She said goodbye and the line stayed open until the
+caller gave up or a watchdog closed it half a minute later, so I gave her a
+hangup decided in code from the transcript: the caller says they are done, the
+agent answers with a sign-off, done.
+
+The first version read the **end** of the caller's turn, which handles "No,
+that's it. Thanks." and correctly ignores "Bye, but first — how much is it?".
+Then I ran it over invented turns and found this one:
+
+```
+"My name is Bye"   ->  hang up
+```
+
+Nobody is called Bye. But Deepgram on an 8 kHz phone line hears names as all
+sorts of things — this is the same recogniser that heard a spelled-out name
+wrong in §8.4 — and the failure it produces is hanging up on somebody halfway
+through introducing themselves. The fix was to require the sign-off to **be**
+the caller's whole last clause rather than merely end it, so "My name is Bye"
+and "It's Bye, B-Y-E" both stay on the call.
+
+**The lesson:** the question for an irreversible action is never "does my rule
+fire when it should?" It is "what is the worst input that fires it?" I found
+this one by writing down the inputs I would hate to be wrong about before
+writing the regex that judges them — and the test file now carries all 28.
+
+---
+
 ## 9. Numbers worth memorising
 
 - **Reply time: 0.95 s median, 1.5 s p90**, measured caller-stops-talking to
@@ -347,7 +377,7 @@ live line, know what "undo" is before you touch it.
   end-of-turn wait **~0.35 s**; network to the model **48 ms**.
 - Prompt: ~8,000 tokens, ~25,000 characters, cached every turn.
 - Cost of the prompt in latency: **25 ms**. Trimming it is not a latency lever.
-- Test suite: **602 tests**, ~8,900 lines of source.
+- Test suite: **637 tests**, ~9,000 lines of source.
 
 Always state the definition with the number. Many vendors quote a figure that
 excludes the pause used to be sure the caller has finished, or that measures the

@@ -25,6 +25,7 @@ TOOLS = {
     "book_appointment",
     "dispatch_emergency",
     "take_message",
+    "end_call",
 }
 
 

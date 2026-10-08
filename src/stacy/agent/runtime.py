@@ -97,6 +97,13 @@ class CallRuntime:
     """Caller-heard response times, from the SDK's own timestamps. See
     :mod:`stacy.metrics.live` for why these replace the stage marks."""
 
+    end_call: str = ""
+    """Why the agent asked to end the call, set by `DeskOperations.end_call`.
+
+    Read in entrypoint._on_item once the line has been spoken: the call ends
+    after the words, never in the middle of them. See stacy.agent.hangup.
+    """
+
     last_caller_turn: str = ""
     """What the caller said in their previous turn, for a number read over two."""
 
