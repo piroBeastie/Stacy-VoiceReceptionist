@@ -217,3 +217,97 @@ Anthropic's model prices are the only vendor-direct figures in the table.
 At today's numbers, a thousand three-minute calls a month costs
 **$153 / ₹14,749**. Doing items 1 and 3 takes it to about **$117 / ₹11,255**.
 All five takes it to **$71 / ₹6,898**.
+
+---
+
+## 9. Beating a competitor at ₹4/min
+
+A company selling voice agents on a wrapper quotes **₹4/min** ($0.0415).
+Can we beat it?
+
+**First: that is a price, and everything above this section is a cost.**
+Comparing them directly is the mistake that kills margin. At their price,
+against our cost:
+
+| Stack | our cost | margin at ₹4 | per 1,000 3-min calls |
+|---|---|---|---|
+| A. Today | ₹4.92 | **−₹0.92 (−23%)** | −₹2,749 **loses money** |
+| B. Haiku 5.5 | ₹4.52 | −₹0.52 (−13%) | −₹1,571 **loses money** |
+| C. + Aura-2 voice | ₹3.75 | +₹0.25 (6%) | +₹745 |
+| D. + promo STT, 60% desk | ₹3.46 | +₹0.54 (14%) | +₹1,628 |
+| E. + self-hosted transport | ₹2.30 | **+₹1.70 (43%)** | +₹5,102 |
+
+Regenerate with `python scripts/cost_model.py --target-inr 4.0`, and add
+`--target-excludes-telephony` if their price is platform-only and the
+customer brings their own trunk (that lifts every margin by ~₹0.33).
+
+**So: yes, from option C onward — but 6% gross is not a business.** That is
+before support, your own time, failed calls, retries and the free tier you
+will inevitably give someone. Only **E has a real business in it**, and E
+means owning the worker fleet and SIP signalling.
+
+### Where their ₹4 could be coming from
+
+A wrapper pays the same rack rates we do, so if they are genuinely selling
+at ₹4 all-in, one of these is true:
+
+- **Volume discounts.** Committed-use deals with Deepgram and ElevenLabs cut
+  30–50% off list. This is the most likely answer, and it is the one we
+  cannot match at low volume.
+- **Cheaper components** already — a budget TTS, a smaller model, or
+  self-hosted transport.
+- **Subsidy.** Priced for growth, funded by someone else.
+- **It is not really ₹4.** Setup fee, monthly minimum, overage rate, or a
+  number quoted to you that is not the list price.
+
+### Ask these before believing the number
+
+| Question | Why it matters |
+|---|---|
+| All-in, or platform-only with telephony extra? | Worth ~₹0.33/min here, more on Indian trunks |
+| **Per-second billing, or rounded up to the minute?** | The big one — see below |
+| Minimum monthly commitment, setup fee, overage rate? | Turns a per-minute price into a real bill |
+| Is the LLM/STT/TTS passthrough at cost, or marked up? | Tells you whether they have volume deals |
+
+### The rounding point, which is a real edge
+
+Our cost is **per second**: LiveKit meters agent sessions in 1-second
+increments with a 10-second minimum, Deepgram bills per second of audio,
+and the model bills per token. Most platforms round **up to the minute**.
+
+On a receptionist line that matters more than it sounds, because a real
+inbound line is full of short calls — wrong numbers, hang-ups, "are you open
+Saturday?".
+
+| A 20-second wrong number | Cost / price |
+|---|---|
+| Us, stack A | ₹1.64 |
+| Us, stack E | ₹0.77 |
+| Them, if rounded up to one minute | ₹4.00 |
+
+A line with many short calls can cost half what a per-minute-rounded
+competitor charges, at the same headline rate.
+
+### The honest strategic read
+
+**Do not fight a wrapper on price.** If they are a wrapper and we are a
+wrapper, the floor is the same vendor rate card and the winner is whoever
+buys more minutes — which is them, not us. Price is the one axis where
+being smaller is a structural disadvantage.
+
+It is also worth being straight about the desk here: 40% of turns answered
+in code sounds like a cost moat, and it is not. It saves ₹0.29/min, because
+the model is only 9% of the bill. **The desk is a latency feature** — 0.4 s
+instead of 1.1 s — that happens to save a little money. Sell it as speed.
+
+What is actually defensible is in
+[features-and-fixes.md](features-and-fixes.md): a correction after booking
+that would have left a technician driving to the wrong address, a booking
+that moved on a caller's stale "yes", a tool failure that gave the caller
+dead air, a farewell detector that would have hung up on someone saying
+their name. An HVAC owner does not lose sleep over ₹0.50 a minute. They lose
+it over a van sent to the wrong house.
+
+So the answer to "can we beat ₹4" is: **yes, down to ₹2.30 with margin, and
+we can quote per-second billing against their rounding — but that is a
+tactical win, and the reason to buy is correctness, not price.**

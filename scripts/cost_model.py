@@ -229,6 +229,10 @@ def main() -> None:
     ap.add_argument("--inr", type=float, default=INR_PER_USD, help="INR per USD")
     ap.add_argument("--minutes", type=float, default=3.0, help="average call length")
     ap.add_argument("--calls", type=int, default=1000, help="calls per month for the volume table")
+    ap.add_argument("--target-inr", type=float, default=None,
+                    help="a competitor's per-minute PRICE in INR; prints gross margin at it")
+    ap.add_argument("--target-excludes-telephony", action="store_true",
+                    help="the competitor's price is platform-only and the customer brings their own trunk")
     args = ap.parse_args()
 
     u = Usage()
@@ -260,6 +264,26 @@ def main() -> None:
     for s in stacks:
         total = s.cost_per_min(u)
         print(f"{s.name:<24}" + "".join(f"{s.lines[p]:>14.5f}" for p in parts) + f"{total:>14.5f}")
+
+    if args.target_inr is not None:
+        target_usd = args.target_inr / args.inr
+        scope = "platform only (customer brings the trunk)" if args.target_excludes_telephony else "all in"
+        print(f"\nAgainst a selling price of Rs {args.target_inr:.2f}/min "
+              f"(${target_usd:.4f}), {scope}:\n")
+        print(f"{'Stack':<24}{'our cost':>12}{'margin/min':>14}{'margin %':>11}"
+              f"{'per 1000 3-min calls':>24}")
+        print("-" * 85)
+        for s in stacks:
+            cost = s.cost_per_min(u)
+            if args.target_excludes_telephony:
+                cost -= s.lines["Telephony"]
+            margin = target_usd - cost
+            pct = margin / target_usd * 100
+            vol = margin * args.minutes * args.calls
+            flag = "" if margin > 0 else "   <-- loses money"
+            print(f"{s.name:<24}{'Rs ' + format(cost * args.inr, '.2f'):>12}"
+                  f"{'Rs ' + format(margin * args.inr, '.2f'):>14}{pct:>10.0f}%"
+                  f"{'Rs ' + format(vol * args.inr, ',.0f'):>24}{flag}")
 
     print("\nAlready saved, per minute, by work that is done:\n")
     for label, saved in counterfactuals(u):
